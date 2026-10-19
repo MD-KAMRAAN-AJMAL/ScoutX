@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -20,6 +21,64 @@ class RetrievalTool(str, Enum):
     KEYWORD = "keyword"
     SEMANTIC = "semantic"
     HYBRID = "hybrid"
+
+
+class ReasoningStatus(str, Enum):
+    NOT_REQUESTED = "not_requested"
+    EXECUTED = "executed"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class RouterThresholds:
+    """Configurable initial routing and reflection thresholds."""
+
+    fast_max_complexity: float = 0.35
+    standard_max_complexity: float = 0.70
+    min_coverage: int = 1
+    fast_min_top_score: float = 0.65
+    standard_min_top_score: float = 0.50
+    deep_min_top_score: float = 0.45
+    fast_min_relevance: float = 0.55
+    standard_min_relevance: float = 0.50
+    deep_min_relevance: float = 0.50
+
+    def __post_init__(self) -> None:
+        if isinstance(self.min_coverage, bool) or not isinstance(self.min_coverage, int) or self.min_coverage < 1:
+            raise ValueError("min_coverage must be an integer >= 1")
+        for name, value in (
+            ("fast_max_complexity", self.fast_max_complexity),
+            ("standard_max_complexity", self.standard_max_complexity),
+            ("fast_min_top_score", self.fast_min_top_score),
+            ("standard_min_top_score", self.standard_min_top_score),
+            ("deep_min_top_score", self.deep_min_top_score),
+            ("fast_min_relevance", self.fast_min_relevance),
+            ("standard_min_relevance", self.standard_min_relevance),
+            ("deep_min_relevance", self.deep_min_relevance),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value!r}")
+            if not (0.0 < float(value) <= 1.0):
+                raise ValueError(f"{name} must be in (0.0, 1.0], got {value}")
+        if not (0.0 < self.fast_max_complexity < self.standard_max_complexity <= 1.0):
+            raise ValueError(
+                "Complexity thresholds must satisfy 0.0 < fast_max_complexity < standard_max_complexity <= 1.0"
+            )
+
+    def required_top_score(self, lane: SearchLane) -> float:
+        return {
+            SearchLane.FAST: self.fast_min_top_score,
+            SearchLane.STANDARD: self.standard_min_top_score,
+            SearchLane.DEEP: self.deep_min_top_score,
+        }[lane]
+
+    def required_relevance(self, lane: SearchLane) -> float:
+        return {
+            SearchLane.FAST: self.fast_min_relevance,
+            SearchLane.STANDARD: self.standard_min_relevance,
+            SearchLane.DEEP: self.deep_min_relevance,
+        }[lane]
 
 
 @dataclass(frozen=True)
@@ -82,11 +141,32 @@ class SearchCandidate:
 
 
 @dataclass(frozen=True)
+class ToolExecutionOutcome:
+    tool: RetrievalTool
+    candidates: tuple[SearchCandidate, ...] = ()
+    error: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.error is None
+
+
+@dataclass(frozen=True)
+class TraceCandidateEvidence:
+    document_id: str
+    score: float
+    tools: tuple[RetrievalTool, ...]
+    matched_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SearchStrategy:
     lane: SearchLane
     tools: tuple[RetrievalTool, ...]
     requires_reranking: bool = False
     uses_llm_reasoning: bool = False
+    widened: bool = False
+    candidate_limit: int = 10
 
 
 @dataclass(frozen=True)
@@ -105,6 +185,10 @@ class RouterTraceStep:
     strategy: SearchStrategy
     candidates_seen: int
     reflection: Reflection
+    candidate_evidence: tuple[TraceCandidateEvidence, ...] = ()
+    tool_errors: dict[RetrievalTool, str] = field(default_factory=dict)
+    forced_exit: bool = False
+    reasoning_status: ReasoningStatus = ReasoningStatus.NOT_REQUESTED
 
 
 @dataclass(frozen=True)

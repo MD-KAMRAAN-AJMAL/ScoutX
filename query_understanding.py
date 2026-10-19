@@ -112,6 +112,8 @@ STOPWORDS = {
     "working",
 }
 
+VAGUE_TERMS = ("thing", "stuff", "something", "numbers", "while ago", "maybe", "whatever")
+
 
 @dataclass(frozen=True)
 class QueryUnderstandingModule:
@@ -129,7 +131,13 @@ class QueryUnderstandingModule:
         keywords = self._parse_keywords(lowered, file_types)
 
         ambiguity_score = self._ambiguity_score(lowered, keywords, file_types, date_window)
-        parser_confidence = max(0.1, round(1.0 - ambiguity_score, 2))
+        parser_confidence = self._parser_confidence(
+            lowered=lowered,
+            keywords=keywords,
+            file_types=file_types,
+            date_window=date_window,
+            filename_hints=filename_hints,
+        )
 
         return ParsedQuery(
             raw=raw_query,
@@ -187,7 +195,7 @@ class QueryUnderstandingModule:
     def _parse_filename_hints(self, raw_query: str) -> list[str]:
         hints = re.findall(r"['\"]([^'\"]+)['\"]", raw_query)
         hints.extend(re.findall(r"\b[\w-]+\.[A-Za-z0-9]{1,6}\b", raw_query))
-        return [hint.strip() for hint in hints if hint.strip()]
+        return self._dedupe([hint.strip() for hint in hints if hint.strip()])
 
     def _parse_keywords(self, query: str, file_types: list[str]) -> list[str]:
         alias_terms = {alias for alias in FILE_TYPE_ALIASES if set(FILE_TYPE_ALIASES[alias]) & set(file_types)}
@@ -208,14 +216,35 @@ class QueryUnderstandingModule:
         file_types: list[str],
         date_window: DateWindow | None,
     ) -> float:
-        vague_terms = ("thing", "stuff", "something", "numbers", "while ago", "maybe", "whatever")
         score = 0.0
         score += 0.25 if len(keywords) == 0 else 0.0
         score += 0.20 if len(keywords) <= 1 else 0.0
         score += 0.15 if not file_types else 0.0
         score += 0.10 if date_window is None else 0.0
-        score += sum(0.12 for term in vague_terms if term in query)
+        score += sum(0.12 for term in VAGUE_TERMS if term in query)
         return round(min(score, 0.9), 2)
+
+    def _parser_confidence(
+        self,
+        lowered: str,
+        keywords: list[str],
+        file_types: list[str],
+        date_window: DateWindow | None,
+        filename_hints: list[str],
+    ) -> float:
+        tokens = self._tokens(lowered)
+        if not tokens:
+            return 0.10
+        confidence = 0.55
+        if filename_hints:
+            confidence += 0.20
+        if keywords:
+            confidence += 0.15
+        if file_types or date_window is not None:
+            confidence += 0.15
+        vague_hits = sum(1 for term in VAGUE_TERMS if term in lowered)
+        confidence -= vague_hits * 0.12
+        return round(max(0.10, min(1.0, confidence)), 2)
 
     def _tokens(self, query: str) -> list[str]:
         return re.findall(r"[a-z0-9]+", query.lower())
