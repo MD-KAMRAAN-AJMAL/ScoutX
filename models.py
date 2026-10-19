@@ -212,6 +212,9 @@ class Recommendation:
     score: float
     explanation: str
     source_candidate: SearchCandidate
+    explanation_source: str = "deterministic"
+    explanation_model: str | None = None
+    cited_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

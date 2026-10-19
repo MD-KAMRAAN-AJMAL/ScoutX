@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from pathlib import Path
 from typing import Sequence
 
 from scoutx import __version__
 from scoutx.document_loader import DocumentLoader
 from scoutx.engine import ScoutXEngine
+from scoutx.llm import ALLOWED_PROVIDERS, LLMConfig, LLMError, create_llm_provider
 from scoutx.storage import UsageLog
 
 
@@ -26,6 +29,39 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--usage-db", help="SQLite usage/profile database path")
     search.add_argument("--limit", type=int, default=5, help="maximum recommendations to print")
     search.add_argument("--trace", action="store_true", help="print router trace details")
+    search.add_argument(
+        "--llm-provider",
+        choices=sorted(ALLOWED_PROVIDERS),
+        help="enable an LLM provider (ollama, openai_compatible, or gemini)",
+    )
+    search.add_argument(
+        "--llm-model",
+        help="model identifier for the selected LLM provider (or set SCOUTX_LLM_MODEL)",
+    )
+    search.add_argument(
+        "--llm-base-url",
+        help="override the provider HTTP base URL",
+    )
+    search.add_argument(
+        "--llm-api-key-env",
+        help="environment variable name containing the provider API key (never pass the secret key directly)",
+    )
+    search.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=8.0,
+        help="positive finite HTTP timeout in seconds for LLM calls (default: 8.0)",
+    )
+    search.add_argument(
+        "--require-llm",
+        action="store_true",
+        help="require LLM-generated explanations (fail unless --offline-fallback is set)",
+    )
+    search.add_argument(
+        "--offline-fallback",
+        action="store_true",
+        help="allow explicit degraded deterministic fallback when the LLM is unavailable",
+    )
 
     log_open = subparsers.add_parser("log-open", help="record a file-open event for personalization")
     log_open.add_argument("path", help="file that was opened")
@@ -53,8 +89,42 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _search(args: argparse.Namespace) -> int:
-    engine = ScoutXEngine.from_directory(args.root, usage_db=args.usage_db)
-    response = engine.search(args.query, limit=args.limit)
+    llm_provider = None
+    require_llm: bool | None = True if args.require_llm else None
+
+    if args.llm_provider:
+        model_name = (args.llm_model or os.environ.get("SCOUTX_LLM_MODEL") or "").strip()
+        if not model_name:
+            print(
+                "Error: --llm-model (or SCOUTX_LLM_MODEL) is required when --llm-provider is specified.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            config = LLMConfig(
+                provider=args.llm_provider,
+                model=model_name,
+                base_url=args.llm_base_url,
+                api_key_env=args.llm_api_key_env,
+                timeout_seconds=args.llm_timeout,
+            )
+            llm_provider = create_llm_provider(config)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: invalid LLM configuration: {exc}", file=sys.stderr)
+            return 2
+
+    try:
+        engine = ScoutXEngine.from_directory(
+            args.root,
+            usage_db=args.usage_db,
+            llm_provider=llm_provider,
+            require_llm=require_llm,
+            allow_degraded_fallback=bool(args.offline_fallback),
+        )
+        response = engine.search(args.query, limit=args.limit)
+    except LLMError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
     if not response.recommendations:
         print("No recommendations found.")
