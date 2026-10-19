@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from scoutx.document_loader import DocumentLoader
+from scoutx.embeddings import (
+    EmbeddingDimensionMismatchError,
+    EmbeddingError,
+    build_document_embedding_text,
+    validate_and_normalize_vector,
+)
 from scoutx.models import FileDocument, ParsedQuery, RetrievalTool, SearchCandidate
+from scoutx.storage import MetadataIndex, VectorIndex, compute_document_content_hash
 from scoutx.text import clamp_score, cosine_similarity, expand_terms, term_counter, tokenize
+
+if TYPE_CHECKING:
+    from scoutx.embeddings import EmbeddingProvider
 
 
 class DocumentCorpus:
@@ -38,8 +50,14 @@ class DocumentCorpus:
         }
 
     @classmethod
-    def from_directory(cls, root: str | Path) -> "DocumentCorpus":
-        return cls(DocumentLoader().load_directory(Path(root)))
+    def from_directory(
+        cls,
+        root: str | Path,
+        *,
+        loader: DocumentLoader | None = None,
+    ) -> "DocumentCorpus":
+        doc_loader = loader or DocumentLoader()
+        return cls(doc_loader.load_directory(Path(root)))
 
     def get(self, document_id: str) -> FileDocument | None:
         return self._by_id.get(document_id)
@@ -52,8 +70,25 @@ class DocumentCorpus:
 
 
 class RetrievalToolbox:
-    def __init__(self, corpus: DocumentCorpus):
+    def __init__(
+        self,
+        corpus: DocumentCorpus,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+        vector_index: VectorIndex | None = None,
+        metadata_index: MetadataIndex | None = None,
+        strict_embeddings: bool = False,
+    ):
         self.corpus = corpus
+        self.embedding_provider = embedding_provider
+        self.vector_index = vector_index
+        self.metadata_index = metadata_index
+        self.strict_embeddings = bool(strict_embeddings)
+        self.last_semantic_fallback_error: str | None = None
+        self._in_memory_embeddings: dict[str, tuple[str, str, tuple[float, ...]]] = {}
+
+        if self.metadata_index is not None:
+            self.metadata_index.sync_documents(self.corpus.documents, prune_missing=True)
 
     def search(
         self,
@@ -97,20 +132,32 @@ class RetrievalToolbox:
                         q_tok
                         for q_tok in query_tokens
                         if len(q_tok) >= 4
-                        and any(n_tok.startswith(q_tok[:4]) or q_tok.startswith(n_tok[:4]) for n_tok in name_tokens if len(n_tok) >= 4)
+                        and any(
+                            n_tok.startswith(q_tok[:4]) or q_tok.startswith(n_tok[:4])
+                            for n_tok in name_tokens
+                            if len(n_tok) >= 4
+                        )
                     }
                     - set(token_hits)
                 )
             exact_hint = any(hint.lower() in name for hint in parsed_query.filename_hints)
             fuzzy = SequenceMatcher(None, query_text.lower(), name).ratio()
             min_fuzzy = 0.45 if widened else 0.60
-            effective_fuzzy = fuzzy * 0.72 if (exact_hint or token_hits or prefix_hits or fuzzy >= min_fuzzy) else 0.0
+            effective_fuzzy = (
+                fuzzy * 0.72
+                if (exact_hint or token_hits or prefix_hits or fuzzy >= min_fuzzy)
+                else 0.0
+            )
             token_score = (len(token_hits) + 0.6 * len(prefix_hits)) / max(1, len(set(query_tokens)))
             score = clamp_score(max(effective_fuzzy, token_score, 1.0 if exact_hint else 0.0))
             if score <= 0:
                 continue
             matched = tuple(sorted(set(token_hits) | set(prefix_hits)))
-            reason = "filename match (widened)" if widened and prefix_hits and not token_hits else "filename match"
+            reason = (
+                "filename match (widened)"
+                if widened and prefix_hits and not token_hits
+                else "filename match"
+            )
             candidates.append(
                 SearchCandidate(
                     document=document,
@@ -130,18 +177,22 @@ class RetrievalToolbox:
         *,
         widened: bool = False,
     ) -> tuple[SearchCandidate, ...]:
-        candidates: list[SearchCandidate, ...] = []
+        candidates: list[SearchCandidate] = []
         query_terms = self._query_terms(parsed_query, expand=widened, widened=widened)
         query_vector = term_counter(query_terms)
 
         for document in self.corpus.documents:
-            extension_match = document.extension in parsed_query.file_types if parsed_query.file_types else False
+            extension_match = (
+                document.extension in parsed_query.file_types if parsed_query.file_types else False
+            )
             date_match = (
                 parsed_query.date_window.contains(document.modified_at)
                 if parsed_query.date_window is not None
                 else False
             )
-            metadata_similarity = cosine_similarity(query_vector, self.corpus.metadata_vector(document))
+            metadata_similarity = cosine_similarity(
+                query_vector, self.corpus.metadata_vector(document)
+            )
 
             score = 0.0
             score += 0.45 if extension_match else 0.0
@@ -165,7 +216,11 @@ class RetrievalToolbox:
                     score=score,
                     tool=RetrievalTool.METADATA,
                     matched_terms=tuple(matched),
-                    reason="metadata constraints matched (widened)" if widened else "metadata constraints matched",
+                    reason=(
+                        "metadata constraints matched (widened)"
+                        if widened
+                        else "metadata constraints matched"
+                    ),
                 )
             )
 
@@ -192,13 +247,23 @@ class RetrievalToolbox:
                         q_tok
                         for q_tok in query_terms
                         if len(q_tok) >= 4
-                        and any(d_tok.startswith(q_tok[:4]) or q_tok.startswith(d_tok[:4]) for d_tok in document_vector if len(d_tok) >= 4)
+                        and any(
+                            d_tok.startswith(q_tok[:4]) or q_tok.startswith(d_tok[:4])
+                            for d_tok in document_vector
+                            if len(d_tok) >= 4
+                        )
                     }
                 )
                 if prefix_matches:
                     matches = prefix_matches
-                    similarity = max(similarity, 0.28 * (len(prefix_matches) / max(1, len(query_terms))))
-            if parsed_query.file_types and document.extension in parsed_query.file_types and (matches or widened):
+                    similarity = max(
+                        similarity, 0.28 * (len(prefix_matches) / max(1, len(query_terms)))
+                    )
+            if (
+                parsed_query.file_types
+                and document.extension in parsed_query.file_types
+                and (matches or widened)
+            ):
                 similarity += 0.12
             score = clamp_score(similarity)
             if score <= 0:
@@ -216,6 +281,75 @@ class RetrievalToolbox:
         return self._top(candidates, limit)
 
     def semantic_search(
+        self,
+        parsed_query: ParsedQuery,
+        limit: int | None = 10,
+        *,
+        widened: bool = False,
+    ) -> tuple[SearchCandidate, ...]:
+        if self.embedding_provider is None:
+            return self._lexical_semantic_search(parsed_query, limit, widened=widened)
+
+        try:
+            dense_scores = self._compute_dense_scores(parsed_query, widened=widened)
+        except (EmbeddingError, sqlite3.Error, ValueError) as exc:
+            self.last_semantic_fallback_error = str(exc)
+            if self.strict_embeddings:
+                raise
+            return self._lexical_semantic_search(parsed_query, limit, widened=widened)
+
+        self.last_semantic_fallback_error = None
+        query_terms = self._query_terms(parsed_query, expand=True, widened=widened)
+        query_vector = term_counter(query_terms)
+        candidates: list[SearchCandidate] = []
+
+        for document in self.corpus.documents:
+            document_vector = self.corpus.content_vector(document)
+            if widened:
+                document_vector = document_vector + self.corpus.metadata_vector(document)
+            lexical_sim = cosine_similarity(query_vector, document_vector)
+            matches = sorted(set(query_terms) & set(document_vector))
+            dense_sim = dense_scores.get(document.id, 0.0)
+
+            if dense_sim > 0.0 and lexical_sim > 0.0:
+                score = clamp_score(max(lexical_sim, dense_sim * 0.85 + lexical_sim * 0.15))
+                reason = (
+                    "dense semantic similarity match (widened)"
+                    if widened
+                    else "dense semantic similarity match"
+                )
+            elif dense_sim > 0.0:
+                score = clamp_score(dense_sim)
+                reason = (
+                    "dense semantic similarity match (widened)"
+                    if widened
+                    else "dense semantic similarity match"
+                )
+            elif lexical_sim > 0.0:
+                score = clamp_score(lexical_sim)
+                reason = (
+                    "semantic similarity match (widened lexical expansion)"
+                    if widened
+                    else "semantic similarity match"
+                )
+            else:
+                continue
+
+            if score <= 0:
+                continue
+            candidates.append(
+                SearchCandidate(
+                    document=document,
+                    score=score,
+                    tool=RetrievalTool.SEMANTIC,
+                    matched_terms=tuple(matches),
+                    reason=reason,
+                )
+            )
+
+        return self._top(candidates, limit)
+
+    def _lexical_semantic_search(
         self,
         parsed_query: ParsedQuery,
         limit: int | None = 10,
@@ -241,11 +375,119 @@ class RetrievalToolbox:
                     score=score,
                     tool=RetrievalTool.SEMANTIC,
                     matched_terms=tuple(matches),
-                    reason="semantic similarity match (widened lexical expansion)" if widened else "semantic similarity match",
+                    reason=(
+                        "semantic similarity match (widened lexical expansion)"
+                        if widened
+                        else "semantic similarity match"
+                    ),
                 )
             )
 
         return self._top(candidates, limit)
+
+    def _compute_dense_scores(
+        self,
+        parsed_query: ParsedQuery,
+        *,
+        widened: bool = False,
+    ) -> dict[str, float]:
+        assert self.embedding_provider is not None
+        provider = self.embedding_provider
+        provider_config = getattr(provider, "config", None)
+        max_chars = getattr(provider_config, "max_input_chars", 4000)
+
+        query_terms = self._query_terms(parsed_query, expand=widened, widened=widened)
+        raw_query_text = " ".join(query_terms).strip() or parsed_query.raw.strip()
+        if not raw_query_text or not tokenize(raw_query_text):
+            return {}
+        bounded_query_text = raw_query_text[:max_chars]
+
+        if not self.corpus.documents:
+            return {}
+
+        if self.vector_index is not None:
+            self.vector_index.index_documents(
+                self.corpus.documents,
+                provider,
+                prune_missing=True,
+                max_input_chars=max_chars,
+            )
+            query_vec = provider.embed_query(bounded_query_text)
+            live_ids = {doc.id for doc in self.corpus.documents}
+            ranked_pairs = self.vector_index.search(
+                query_vec,
+                model_id=provider.model_id,
+                limit=None,
+                candidate_ids=live_ids,
+            )
+            return {
+                doc_id: score
+                for doc_id, score in ranked_pairs
+                if self.corpus.get(doc_id) is not None
+            }
+
+        # In-memory dense vector fallback when no persistent VectorIndex is attached
+        model_id = provider.model_id
+        expected_dim = getattr(provider, "dimensions", None)
+        to_embed: list[tuple[FileDocument, str, str]] = []
+        live_ids = {doc.id for doc in self.corpus.documents}
+
+        # Prune deleted documents from in-memory cache
+        for stale_id in list(self._in_memory_embeddings):
+            if stale_id not in live_ids:
+                del self._in_memory_embeddings[stale_id]
+
+        for doc in self.corpus.documents:
+            c_hash = compute_document_content_hash(doc)
+            cached = self._in_memory_embeddings.get(doc.id)
+            if cached is not None:
+                cached_hash, cached_model, cached_vec = cached
+                if cached_model != model_id:
+                    raise EmbeddingDimensionMismatchError(
+                        f"In-memory vector cache bound to '{cached_model}', cannot mix with '{model_id}'"
+                    )
+                if expected_dim is None:
+                    expected_dim = len(cached_vec)
+                if cached_hash == c_hash:
+                    continue
+            to_embed.append(
+                (doc, c_hash, build_document_embedding_text(doc, max_input_chars=max_chars))
+            )
+
+        if to_embed:
+            raw_vectors = provider.embed_texts([item[2] for item in to_embed])
+            if len(raw_vectors) != len(to_embed):
+                raise EmbeddingError(
+                    f"Provider returned {len(raw_vectors)} vectors for {len(to_embed)} documents"
+                )
+            validated_batch: list[tuple[str, str, tuple[float, ...]]] = []
+            for (doc, c_hash, _), raw_vec in zip(to_embed, raw_vectors):
+                norm_vec = validate_and_normalize_vector(
+                    raw_vec,
+                    expected_dimensions=expected_dim,
+                    normalize=True,
+                )
+                if expected_dim is None:
+                    expected_dim = len(norm_vec)
+                validated_batch.append((doc.id, c_hash, norm_vec))
+            for doc_id, c_hash, norm_vec in validated_batch:
+                self._in_memory_embeddings[doc_id] = (c_hash, model_id, norm_vec)
+
+        query_vec = validate_and_normalize_vector(
+            provider.embed_query(bounded_query_text),
+            expected_dimensions=expected_dim,
+            normalize=True,
+        )
+        scores: dict[str, float] = {}
+        for doc in self.corpus.documents:
+            entry = self._in_memory_embeddings.get(doc.id)
+            if entry is None:
+                continue
+            _, _, doc_vec = entry
+            dot = sum(q_val * d_val for q_val, d_val in zip(query_vec, doc_vec))
+            if dot > 0.0:
+                scores[doc.id] = clamp_score(dot)
+        return scores
 
     def hybrid_search(
         self,
@@ -284,7 +526,9 @@ class RetrievalToolbox:
         ]
         return self._top(candidates, limit)
 
-    def _query_terms(self, parsed_query: ParsedQuery, expand: bool, widened: bool = False) -> list[str]:
+    def _query_terms(
+        self, parsed_query: ParsedQuery, expand: bool, widened: bool = False
+    ) -> list[str]:
         terms = [
             *parsed_query.keywords,
             *tokenize(" ".join(parsed_query.filename_hints)),
@@ -302,7 +546,9 @@ class RetrievalToolbox:
             expanded = expand_terms(expanded)
         return expanded
 
-    def _top(self, candidates: list[SearchCandidate], limit: int | None) -> tuple[SearchCandidate, ...]:
+    def _top(
+        self, candidates: list[SearchCandidate], limit: int | None
+    ) -> tuple[SearchCandidate, ...]:
         ordered = sorted(
             candidates,
             key=lambda candidate: (

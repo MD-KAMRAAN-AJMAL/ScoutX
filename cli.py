@@ -10,9 +10,15 @@ from typing import Sequence
 
 from scoutx import __version__
 from scoutx.document_loader import DocumentLoader
+from scoutx.embeddings import (
+    ALLOWED_EMBEDDING_PROVIDERS,
+    EmbeddingConfig,
+    EmbeddingError,
+    create_embedding_provider,
+)
 from scoutx.engine import ScoutXEngine
 from scoutx.llm import ALLOWED_PROVIDERS, LLMConfig, LLMError, create_llm_provider
-from scoutx.storage import UsageLog
+from scoutx.storage import StorageSchemaError, UsageLog
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("query", help="natural-language file discovery query")
     search.add_argument("--root", required=True, help="directory to search")
     search.add_argument("--usage-db", help="SQLite usage/profile database path")
+    search.add_argument(
+        "--index-db",
+        help="SQLite metadata/vector index database path (defaults to --usage-db if set)",
+    )
     search.add_argument("--limit", type=int, default=5, help="maximum recommendations to print")
     search.add_argument("--trace", action="store_true", help="print router trace details")
     search.add_argument(
@@ -62,11 +72,43 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow explicit degraded deterministic fallback when the LLM is unavailable",
     )
+    search.add_argument(
+        "--embedding-provider",
+        choices=sorted(ALLOWED_EMBEDDING_PROVIDERS),
+        help="enable an embedding provider (local_hash, ollama, openai_compatible, or gemini)",
+    )
+    search.add_argument(
+        "--embedding-model",
+        help="model identifier for the selected embedding provider (or set SCOUTX_EMBEDDING_MODEL)",
+    )
+    search.add_argument(
+        "--embedding-dimensions",
+        type=int,
+        help="embedding vector dimensions (defaults to 64 for local_hash)",
+    )
+    search.add_argument(
+        "--embedding-base-url",
+        help="override the embedding provider HTTP base URL",
+    )
+    search.add_argument(
+        "--embedding-api-key-env",
+        help="environment variable name containing the embedding provider API key",
+    )
+    search.add_argument(
+        "--embedding-timeout",
+        type=float,
+        default=8.0,
+        help="positive finite HTTP timeout in seconds for embedding calls (default: 8.0)",
+    )
 
-    log_open = subparsers.add_parser("log-open", help="record a file-open event for personalization")
+    log_open = subparsers.add_parser(
+        "log-open", help="record a file-open event for personalization"
+    )
     log_open.add_argument("path", help="file that was opened")
     log_open.add_argument("--usage-db", required=True, help="SQLite usage/profile database path")
-    log_open.add_argument("--topic", action="append", default=[], help="topic associated with this open event")
+    log_open.add_argument(
+        "--topic", action="append", default=[], help="topic associated with this open event"
+    )
 
     return parser
 
@@ -113,16 +155,48 @@ def _search(args: argparse.Namespace) -> int:
             print(f"Error: invalid LLM configuration: {exc}", file=sys.stderr)
             return 2
 
+    embedding_provider = None
+    if args.embedding_provider:
+        default_emb_model = (
+            "scoutx-feature-hash-v1" if args.embedding_provider == "local_hash" else ""
+        )
+        emb_model_name = (
+            args.embedding_model
+            or os.environ.get("SCOUTX_EMBEDDING_MODEL")
+            or default_emb_model
+        ).strip()
+        if not emb_model_name:
+            print(
+                "Error: --embedding-model (or SCOUTX_EMBEDDING_MODEL) is required when --embedding-provider is specified.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            emb_config = EmbeddingConfig(
+                provider=args.embedding_provider,
+                model=emb_model_name,
+                dimensions=args.embedding_dimensions,
+                base_url=args.embedding_base_url,
+                api_key_env=args.embedding_api_key_env,
+                timeout_seconds=args.embedding_timeout,
+            )
+            embedding_provider = create_embedding_provider(emb_config)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: invalid embedding configuration: {exc}", file=sys.stderr)
+            return 2
+
     try:
         engine = ScoutXEngine.from_directory(
             args.root,
             usage_db=args.usage_db,
+            index_db=args.index_db,
             llm_provider=llm_provider,
             require_llm=require_llm,
             allow_degraded_fallback=bool(args.offline_fallback),
+            embedding_provider=embedding_provider,
         )
         response = engine.search(args.query, limit=args.limit)
-    except LLMError as exc:
+    except (LLMError, EmbeddingError, StorageSchemaError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
