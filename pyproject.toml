@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scoutx"
+dynamic = ["version"]
+description = "ScoutX agentic file discovery and recommendation system."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+scoutx = "scoutx.cli:main"
+
+[tool.setuptools]
+packages = ["scoutx"]
+package-dir = { "scoutx" = "." }
+
+[tool.setuptools.dynamic]
+version = { attr = "scoutx.__version__" }
