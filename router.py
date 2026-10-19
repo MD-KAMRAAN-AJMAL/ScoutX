@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections import defaultdict
-from typing import Callable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from scoutx.models import (
     FileDocument,
@@ -24,6 +24,9 @@ from scoutx.models import (
 )
 from scoutx.retrieval import RetrievalToolbox
 from scoutx.text import clamp_score, expand_terms, tokenize
+
+if TYPE_CHECKING:
+    from scoutx.laya import LayaAdvisor
 
 VAGUE_QUERY_TERMS = frozenset(
     {"thing", "stuff", "something", "numbers", "maybe", "whatever", "while", "ago"}
@@ -59,6 +62,7 @@ class ComplexityRoutingAgent:
         thresholds: RouterThresholds | None = None,
         history_difficulty_fn: Callable[[ParsedQuery], float] | None = None,
         reasoner: CandidateReasoner | None = None,
+        laya_advisor: LayaAdvisor | None = None,
     ):
         if isinstance(max_escalations, bool) or not isinstance(max_escalations, int) or max_escalations < 0:
             raise ValueError(f"max_escalations must be an integer >= 0, got {max_escalations!r}")
@@ -71,12 +75,24 @@ class ComplexityRoutingAgent:
         self.thresholds = thresholds or RouterThresholds()
         self.history_difficulty_fn = history_difficulty_fn
         self.reasoner = reasoner
+        self.laya_advisor = laya_advisor
 
     def run(self, parsed_query: ParsedQuery) -> RouterResult:
         complexity_score = self.score_complexity(parsed_query)
         trace: list[RouterTraceStep] = []
         escalation_level = 0
         candidates: tuple[SearchCandidate, ...] = ()
+
+        laya_suggestion = None
+        if self.laya_advisor is not None:
+            try:
+                laya_suggestion = self.laya_advisor.advise_search(parsed_query, complexity_score)
+            except Exception as exc:
+                from scoutx.models import LayaAdvisorSuggestion
+                laya_suggestion = LayaAdvisorSuggestion(
+                    status="unavailable",
+                    error_message=f"Laya advisor exception: {exc}",
+                )
 
         while True:
             reached_escalation_cap = escalation_level >= self.max_escalations
@@ -133,6 +149,7 @@ class ComplexityRoutingAgent:
                     tool_errors=tool_errors,
                     forced_exit=step_forced_exit,
                     reasoning_status=reasoning_status,
+                    laya_advisory=laya_suggestion if escalation_level == 0 else None,
                 )
             )
 

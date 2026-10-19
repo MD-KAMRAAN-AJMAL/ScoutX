@@ -179,6 +179,24 @@ class Reflection:
 
 
 @dataclass(frozen=True)
+class LayaAdvisorSuggestion:
+    """Bounded, privacy-safe shadow telemetry from the Laya System-1 advisor.
+
+    NOTE: This is strictly advisory telemetry. It never modifies ScoutX's strategy,
+    tool selection, candidate ordering, reflection, or iteration guards.
+    """
+
+    suggested_lane: SearchLane | None = None
+    suggested_escalate: bool | None = None
+    escalation_probability: float | None = None
+    confidence: float | None = None
+    model_identifier: str = ""
+    latency_ms: float = 0.0
+    status: str = "ok"  # "ok", "disabled", "unavailable", "timeout", "invalid_response"
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class RouterTraceStep:
     iteration: int
     complexity_score: float
@@ -189,6 +207,7 @@ class RouterTraceStep:
     tool_errors: dict[RetrievalTool, str] = field(default_factory=dict)
     forced_exit: bool = False
     reasoning_status: ReasoningStatus = ReasoningStatus.NOT_REQUESTED
+    laya_advisory: LayaAdvisorSuggestion | None = None
 
 
 @dataclass(frozen=True)

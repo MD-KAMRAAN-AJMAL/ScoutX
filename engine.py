@@ -22,6 +22,7 @@ from scoutx.storage import MetadataIndex, UsageLog, UserProfileStore, VectorInde
 
 if TYPE_CHECKING:
     from scoutx.embeddings import EmbeddingProvider
+    from scoutx.laya import LayaAdvisor
     from scoutx.llm import LLMProvider
 
 
@@ -40,6 +41,7 @@ class ScoutXEngine:
         metadata_index: MetadataIndex | None = None,
         vector_index: VectorIndex | None = None,
         strict_embeddings: bool = False,
+        laya_advisor: LayaAdvisor | None = None,
     ):
         self.corpus = corpus
         self.usage_log = usage_log
@@ -51,6 +53,7 @@ class ScoutXEngine:
         self.embedding_provider = embedding_provider
         self.strict_embeddings = bool(strict_embeddings)
         self.llm_provider = llm_provider
+        self.laya_advisor = laya_advisor
         self.query_understanding = QueryUnderstandingModule(llm_provider=llm_provider)
         self.toolbox = RetrievalToolbox(
             corpus,
@@ -62,6 +65,7 @@ class ScoutXEngine:
         self.router = ComplexityRoutingAgent(
             self.toolbox,
             reasoner=llm_provider,
+            laya_advisor=laya_advisor,
         )
         self.reranker = RerankingModule()
         self.context_memory = ContextMemoryModule(profile)
@@ -85,6 +89,7 @@ class ScoutXEngine:
         allow_degraded_fallback: bool = False,
         embedding_provider: EmbeddingProvider | None = None,
         strict_embeddings: bool = False,
+        laya_advisor: LayaAdvisor | None = None,
     ) -> "ScoutXEngine":
         usage_log = UsageLog(usage_db) if usage_db is not None else None
         profile_store = usage_log.profile_store if usage_log is not None else None
@@ -121,6 +126,7 @@ class ScoutXEngine:
             allow_degraded_fallback=allow_degraded_fallback,
             embedding_provider=embedding_provider,
             strict_embeddings=strict_embeddings,
+            laya_advisor=laya_advisor,
         )
 
     def search(self, raw_query: str, limit: int = 5) -> SearchResponse:

@@ -17,6 +17,7 @@ from scoutx.embeddings import (
     create_embedding_provider,
 )
 from scoutx.engine import ScoutXEngine
+from scoutx.laya import LayaConfig, LayaHTTPAdvisor
 from scoutx.llm import ALLOWED_PROVIDERS, LLMConfig, LLMError, create_llm_provider
 from scoutx.storage import StorageSchemaError, UsageLog
 
@@ -99,6 +100,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=8.0,
         help="positive finite HTTP timeout in seconds for embedding calls (default: 8.0)",
+    )
+    search.add_argument(
+        "--laya-shadow",
+        action="store_true",
+        help="enable Laya System-1 shadow advisory (pure telemetry, never changes routing)",
+    )
+    search.add_argument(
+        "--laya-base-url",
+        default="http://127.0.0.1:8001",
+        help="Laya HTTP bridge base URL (default: http://127.0.0.1:8001)",
+    )
+    search.add_argument(
+        "--laya-api-key-env",
+        help="environment variable name containing the Laya API key/token if authentication is required",
+    )
+    search.add_argument(
+        "--laya-timeout",
+        type=float,
+        default=0.5,
+        help="positive finite client deadline in seconds for Laya advisory HTTP call (default: 0.5s)",
     )
 
     log_open = subparsers.add_parser(
@@ -185,6 +206,20 @@ def _search(args: argparse.Namespace) -> int:
             print(f"Error: invalid embedding configuration: {exc}", file=sys.stderr)
             return 2
 
+    laya_advisor = None
+    if getattr(args, "laya_shadow", False):
+        try:
+            laya_cfg = LayaConfig(
+                enabled=True,
+                base_url=args.laya_base_url,
+                api_key_env=args.laya_api_key_env,
+                timeout_seconds=args.laya_timeout,
+            )
+            laya_advisor = LayaHTTPAdvisor(laya_cfg)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: invalid Laya configuration: {exc}", file=sys.stderr)
+            return 2
+
     try:
         engine = ScoutXEngine.from_directory(
             args.root,
@@ -194,6 +229,7 @@ def _search(args: argparse.Namespace) -> int:
             require_llm=require_llm,
             allow_degraded_fallback=bool(args.offline_fallback),
             embedding_provider=embedding_provider,
+            laya_advisor=laya_advisor,
         )
         response = engine.search(args.query, limit=args.limit)
     except (LLMError, EmbeddingError, StorageSchemaError) as exc:
@@ -211,7 +247,7 @@ def _search(args: argparse.Namespace) -> int:
         print("\nRouter trace:")
         for step in response.router_result.trace:
             tools = ", ".join(tool.value for tool in step.strategy.tools)
-            print(
+            trace_str = (
                 "   "
                 f"iteration={step.iteration} "
                 f"lane={step.strategy.lane.value} "
@@ -221,6 +257,15 @@ def _search(args: argparse.Namespace) -> int:
                 f"confident={step.reflection.confident} "
                 f"reason={step.reflection.reason}"
             )
+            if step.laya_advisory is not None:
+                adv = step.laya_advisory
+                trace_str += (
+                    f" | laya[status={adv.status} "
+                    f"suggested_lane={adv.suggested_lane.value if adv.suggested_lane else 'none'} "
+                    f"escalate_prob={adv.escalation_probability if adv.escalation_probability is not None else 'none'} "
+                    f"conf={adv.confidence if adv.confidence is not None else 'none'}]"
+                )
+            print(trace_str)
 
     return 0
 
