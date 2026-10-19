@@ -1,12 +1,12 @@
-"""Command-line entry point for ScoutX."""
+"""Command-line interface for ScoutX."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from scoutx import __version__
 from scoutx.document_loader import DocumentLoader
@@ -18,7 +18,7 @@ from scoutx.embeddings import (
 )
 from scoutx.engine import ScoutXEngine
 from scoutx.laya import LayaConfig, LayaHTTPAdvisor
-from scoutx.llm import ALLOWED_PROVIDERS, LLMConfig, LLMError, create_llm_provider
+from scoutx.llm import LLMConfig, LLMError, create_llm_provider
 from scoutx.storage import StorageSchemaError, UsageLog
 
 
@@ -27,23 +27,44 @@ def build_parser() -> argparse.ArgumentParser:
         prog="scoutx",
         description="ScoutX agentic file discovery and recommendation system.",
     )
-    parser.add_argument("--version", action="store_true", help="print the ScoutX version")
-    subparsers = parser.add_subparsers(dest="command")
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="show program's version number and exit",
+    )
 
-    search = subparsers.add_parser("search", help="run a ScoutX file recommendation query")
-    search.add_argument("query", help="natural-language file discovery query")
-    search.add_argument("--root", required=True, help="directory to search")
-    search.add_argument("--usage-db", help="SQLite usage/profile database path")
+    subparsers = parser.add_subparsers(dest="command", help="available commands")
+
+    search = subparsers.add_parser("search", help="search for documents matching a query")
+    search.add_argument("query", help="natural-language search query")
+    search.add_argument(
+        "--root",
+        default=os.getcwd(),
+        help="root directory to search (default: current directory)",
+    )
+    search.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="maximum number of recommendations to return (default: 5)",
+    )
+    search.add_argument(
+        "--trace",
+        action="store_true",
+        help="print internal routing loop trace to stderr",
+    )
+    search.add_argument(
+        "--usage-db",
+        help="SQLite database path for persisting query history and personalization",
+    )
     search.add_argument(
         "--index-db",
-        help="SQLite metadata/vector index database path (defaults to --usage-db if set)",
+        help="dedicated SQLite database path for persistent metadata and vector indices",
     )
-    search.add_argument("--limit", type=int, default=5, help="maximum recommendations to print")
-    search.add_argument("--trace", action="store_true", help="print router trace details")
     search.add_argument(
         "--llm-provider",
-        choices=sorted(ALLOWED_PROVIDERS),
-        help="enable an LLM provider (ollama, openai_compatible, or gemini)",
+        choices=["ollama", "openai_compatible", "gemini"],
+        help="LLM provider for grounded explanations and query refinement",
     )
     search.add_argument(
         "--llm-model",
@@ -51,27 +72,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument(
         "--llm-base-url",
-        help="override the provider HTTP base URL",
+        help="override the LLM provider HTTP base URL",
     )
     search.add_argument(
         "--llm-api-key-env",
-        help="environment variable name containing the provider API key (never pass the secret key directly)",
+        help="environment variable name containing the LLM provider API key",
     )
     search.add_argument(
         "--llm-timeout",
         type=float,
-        default=8.0,
-        help="positive finite HTTP timeout in seconds for LLM calls (default: 8.0)",
+        default=3.0,
+        help="positive finite HTTP timeout in seconds for LLM calls (default: 3.0)",
     )
     search.add_argument(
         "--require-llm",
         action="store_true",
-        help="require LLM-generated explanations (fail unless --offline-fallback is set)",
+        help="fail fast if the requested LLM provider is unreachable",
     )
     search.add_argument(
         "--offline-fallback",
         action="store_true",
-        help="allow explicit degraded deterministic fallback when the LLM is unavailable",
+        help="allow deterministic offline fallback explanation if LLM fails (degraded mode)",
     )
     search.add_argument(
         "--embedding-provider",
@@ -98,8 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument(
         "--embedding-timeout",
         type=float,
-        default=8.0,
-        help="positive finite HTTP timeout in seconds for embedding calls (default: 8.0)",
+        default=5.0,
+        help="positive finite HTTP timeout in seconds for embedding calls (default: 5.0)",
     )
     search.add_argument(
         "--laya-shadow",
@@ -131,6 +152,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--topic", action="append", default=[], help="topic associated with this open event"
     )
 
+    launch = subparsers.add_parser(
+        "launch", help="open the ScoutX Spotlight-style desktop launcher"
+    )
+    launch.add_argument("--root", help="root directory to search (defaults to settings search_root)")
+    launch.add_argument("--config", help="custom path to config.json settings file")
+    launch.add_argument("--usage-db", help="path to usage.db SQLite file")
+    launch.add_argument("--index-db", help="path to index.db SQLite file")
+    launch.add_argument("--limit", type=int, default=None, help="maximum results to display")
+
+    gui = subparsers.add_parser(
+        "gui", help="alias for launch: open the ScoutX Spotlight-style desktop launcher"
+    )
+    gui.add_argument("--root", help="root directory to search (defaults to settings search_root)")
+    gui.add_argument("--config", help="custom path to config.json settings file")
+    gui.add_argument("--usage-db", help="path to usage.db SQLite file")
+    gui.add_argument("--index-db", help="path to index.db SQLite file")
+    gui.add_argument("--limit", type=int, default=None, help="maximum results to display")
+
     return parser
 
 
@@ -146,9 +185,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _search(args)
     if args.command == "log-open":
         return _log_open(args)
+    if args.command in {"launch", "gui"}:
+        return _launch_gui(args)
 
     parser.print_help()
     return 0
+
+
+def _launch_gui(args: argparse.Namespace) -> int:
+    try:
+        from scoutx.launcher import run_launcher
+        return run_launcher(args)
+    except ImportError as exc:
+        print(
+            "Error: GUI dependencies not installed.\n"
+            "Install with: pip install 'scoutx[gui]' (or pip install PySide6)",
+            file=sys.stderr,
+        )
+        return 2
 
 
 def _search(args: argparse.Namespace) -> int:
@@ -225,6 +279,7 @@ def _search(args: argparse.Namespace) -> int:
             args.root,
             usage_db=args.usage_db,
             index_db=args.index_db,
+            loader=DocumentLoader(),
             llm_provider=llm_provider,
             require_llm=require_llm,
             allow_degraded_fallback=bool(args.offline_fallback),
