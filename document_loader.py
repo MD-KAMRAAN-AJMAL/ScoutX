@@ -81,6 +81,24 @@ BINARY_OR_UNSUPPORTED_EXTENSIONS = {
     ".zip",
 }
 
+DEFAULT_EXCLUDED_DIRECTORY_NAMES = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        ".venv",
+        "venv",
+        "env",
+        "node_modules",
+        "site-packages",
+        "dist",
+        "build",
+        ".tox",
+        ".pytest_cache",
+        ".mypy_cache",
+    }
+)
+DEFAULT_EXCLUDED_DIRECTORY_SUFFIXES = (".photoslibrary", ".egg-info", ".app")
+
 DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024  # 2 MiB plain-text file cap
 DEFAULT_MAX_OFFICE_ARCHIVE_BYTES = 10 * 1024 * 1024  # 10 MiB compressed Office archive cap
 DEFAULT_MAX_OFFICE_UNCOMPRESSED_BYTES = 8 * 1024 * 1024  # 8 MiB cumulative XML member cap
@@ -416,4 +434,13 @@ class DocumentLoader:
             relative = path.relative_to(root)
         except ValueError:
             relative = path
-        return any(part.startswith(".") for part in relative.parts)
+        for idx, part in enumerate(relative.parts):
+            if part.startswith("."):
+                return True
+            if part in DEFAULT_EXCLUDED_DIRECTORY_NAMES:
+                return True
+            # For bundle directories (e.g. *.photoslibrary), index the top-level bundle
+            # directory itself, but skip its internal implementation details.
+            if any(part.endswith(sfx) for sfx in DEFAULT_EXCLUDED_DIRECTORY_SUFFIXES) and idx < len(relative.parts) - 1:
+                return True
+        return False

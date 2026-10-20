@@ -42,7 +42,8 @@ class DocumentCorpus:
             document.id: term_counter(
                 [
                     *tokenize(document.path.name),
-                    *tokenize(" ".join(document.metadata.values())),
+                    *tokenize(document.path.parent.name if document.path.parent != document.path else ""),
+                    document.metadata.get("kind", ""),
                     document.extension,
                 ]
             )
@@ -123,6 +124,7 @@ class RetrievalToolbox:
 
         for document in self.corpus.documents:
             name = document.path.name.lower()
+            stem_name = document.path.stem.lower()
             name_tokens = tokenize(name)
             token_hits = sorted(set(query_tokens) & set(name_tokens))
             prefix_hits: list[str] = []
@@ -141,18 +143,38 @@ class RetrievalToolbox:
                     - set(token_hits)
                 )
             exact_hint = any(hint.lower() in name for hint in parsed_query.filename_hints)
-            fuzzy = SequenceMatcher(None, query_text.lower(), name).ratio()
-            min_fuzzy = 0.45 if widened else 0.60
-            effective_fuzzy = (
-                fuzzy * 0.72
-                if (exact_hint or token_hits or prefix_hits or fuzzy >= min_fuzzy)
-                else 0.0
+            clean_q = query_text.strip().lower()
+            exact_name_match = bool(clean_q and (clean_q == name or clean_q == stem_name))
+            word_boundary_match = bool(
+                clean_q and len(clean_q) >= 3 and any(clean_q == n_tok for n_tok in name_tokens)
             )
+
+            fuzzy = SequenceMatcher(None, query_text.lower(), name).ratio()
+            # Require actual lexical grounding (exact match, token hit, prefix hit, or hint)
+            # or very high fuzzy similarity (>= 0.75 for unwidened, >= 0.65 for widened)
+            # rather than admitting unrelated files at 0.45 ratio.
+            min_fuzzy = 0.65 if widened else 0.75
+            has_grounding = exact_name_match or exact_hint or token_hits or prefix_hits
+            effective_fuzzy = fuzzy * 0.72 if (has_grounding or fuzzy >= min_fuzzy) else 0.0
+
             token_score = (len(token_hits) + 0.6 * len(prefix_hits)) / max(1, len(set(query_tokens)))
-            score = clamp_score(max(effective_fuzzy, token_score, 1.0 if exact_hint else 0.0))
+            if exact_name_match:
+                score = 1.0
+            elif exact_hint:
+                score = 1.0
+            elif word_boundary_match and token_score >= 0.5:
+                # Strong exact word match in basename (e.g. photos in family_photos.png or Photos folder)
+                score = clamp_score(max(0.85, effective_fuzzy, token_score))
+            else:
+                score = clamp_score(max(effective_fuzzy, token_score))
+
             if score <= 0:
                 continue
-            matched = tuple(sorted(set(token_hits) | set(prefix_hits)))
+
+            matched_terms_set = set(token_hits) | set(prefix_hits)
+            if exact_name_match and clean_q:
+                matched_terms_set.add(clean_q)
+            matched = tuple(sorted(matched_terms_set))
             reason = (
                 "filename match (widened)"
                 if widened and prefix_hits and not token_hits
