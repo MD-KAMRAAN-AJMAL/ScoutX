@@ -180,3 +180,16 @@ class RoutingCalibrationAndRelevanceTests(unittest.TestCase):
         self.assertTrue(rr.forced_exit)
         self.assertFalse(rr.trace[-1].reflection.confident)
         self.assertIn("iteration guard forced Deep Lane exit", rr.trace[-1].reflection.reason)
+
+    def test_09_images_query_retrieves_photos_and_pictures_confidently_without_guard_failure(self) -> None:
+        """The synonym query 'images' expands to photo/photos/pictures and terminates confidently."""
+        res = self.engine.search("images", limit=5)
+        self.assertGreaterEqual(len(res.recommendations), 1)
+        top_doc_names = [r.document.path.name for r in res.recommendations[:3]]
+        self.assertTrue(
+            any(name in ("Photos", "Pictures", "family_photos.png") for name in top_doc_names)
+        )
+        self.assertFalse(res.router_result.forced_exit)
+        self.assertTrue(res.router_result.trace[-1].reflection.confident)
+        # Escalation count is bounded to 1 (does not trigger the 2-escalation guard)
+        self.assertLessEqual(len(res.router_result.trace) - 1, 1)

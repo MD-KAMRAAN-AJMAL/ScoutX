@@ -119,6 +119,7 @@ class RetrievalToolbox:
         widened: bool = False,
     ) -> tuple[SearchCandidate, ...]:
         query_text = " ".join([*parsed_query.filename_hints, *parsed_query.keywords]) or parsed_query.raw
+        base_query_tokens = self._query_terms(parsed_query, expand=False, widened=False)
         query_tokens = self._query_terms(parsed_query, expand=widened, widened=widened)
         candidates: list[SearchCandidate] = []
 
@@ -145,8 +146,11 @@ class RetrievalToolbox:
             exact_hint = any(hint.lower() in name for hint in parsed_query.filename_hints)
             clean_q = query_text.strip().lower()
             exact_name_match = bool(clean_q and (clean_q == name or clean_q == stem_name))
+            exact_synonym_match = bool(widened and (stem_name in query_tokens or name in query_tokens))
             word_boundary_match = bool(
                 clean_q and len(clean_q) >= 3 and any(clean_q == n_tok for n_tok in name_tokens)
+            ) or bool(
+                widened and any(tok in name_tokens for tok in query_tokens if len(tok) >= 3)
             )
 
             fuzzy = SequenceMatcher(None, query_text.lower(), name).ratio()
@@ -154,17 +158,27 @@ class RetrievalToolbox:
             # or very high fuzzy similarity (>= 0.75 for unwidened, >= 0.65 for widened)
             # rather than admitting unrelated files at 0.45 ratio.
             min_fuzzy = 0.65 if widened else 0.75
-            has_grounding = exact_name_match or exact_hint or token_hits or prefix_hits
+            has_grounding = exact_name_match or exact_hint or exact_synonym_match or token_hits or prefix_hits
             effective_fuzzy = fuzzy * 0.72 if (has_grounding or fuzzy >= min_fuzzy) else 0.0
 
-            token_score = (len(token_hits) + 0.6 * len(prefix_hits)) / max(1, len(set(query_tokens)))
+            concept_count = max(1, len(set(base_query_tokens)))
+            token_score = min(1.0, (len(token_hits) + 0.6 * len(prefix_hits)) / concept_count)
             if exact_name_match:
                 score = 1.0
             elif exact_hint:
                 score = 1.0
-            elif word_boundary_match and token_score >= 0.5:
-                # Strong exact word match in basename (e.g. photos in family_photos.png or Photos folder)
+            elif exact_synonym_match:
+                # Exact basename or stem match on an expanded synonym (e.g. Photos folder for 'images')
                 score = clamp_score(max(0.85, effective_fuzzy, token_score))
+            elif word_boundary_match and token_score >= 0.5:
+                # Strong exact word match in basename (direct or expanded synonym)
+                score = clamp_score(
+                    max(
+                        0.80 if widened and not any(clean_q == n_tok for n_tok in name_tokens) else 0.85,
+                        effective_fuzzy,
+                        token_score,
+                    )
+                )
             else:
                 score = clamp_score(max(effective_fuzzy, token_score))
 
@@ -177,7 +191,7 @@ class RetrievalToolbox:
             matched = tuple(sorted(matched_terms_set))
             reason = (
                 "filename match (widened)"
-                if widened and prefix_hits and not token_hits
+                if widened and (prefix_hits or exact_synonym_match) and not exact_name_match
                 else "filename match"
             )
             candidates.append(
@@ -255,7 +269,7 @@ class RetrievalToolbox:
         *,
         widened: bool = False,
     ) -> tuple[SearchCandidate, ...]:
-        query_terms = self._query_terms(parsed_query, expand=False, widened=widened)
+        query_terms = self._query_terms(parsed_query, expand=widened, widened=widened)
         query_vector = term_counter(query_terms)
         candidates: list[SearchCandidate] = []
 
