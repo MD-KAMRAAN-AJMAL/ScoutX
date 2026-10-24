@@ -46,8 +46,12 @@ The core engine and command-line interface require only the Python standard libr
 
 ```bash
 # Clone the repository
-git clone https://github.com/example/scoutx.git
-cd scoutx
+https://github.com/MD-KAMRAAN-AJMAL/ScoutX.git
+cd ScoutX
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
 
 # Install core CLI
 pip install .
@@ -229,7 +233,15 @@ The desktop launcher automatically creates and reads `config.json`. Example stru
 
 ```json
 {
-  \"search_root\": \"/Users/user/Documents\",\n  \"result_limit\": 8,\n  \"debounce_ms\": 150,\n  \"hide_on_focus_loss\": true,\n  \"embedding_provider\": \"local_hash\",\n  \"llm_provider\": null,\n  \"laya_shadow\": false\n}\n```
+  "search_root": "/Users/user/Documents",
+  "result_limit": 8,
+  "debounce_ms": 150,
+  "hide_on_focus_loss": true,
+  "embedding_provider": "local_hash",
+  "llm_provider": null,
+  "laya_shadow": false
+}
+```
 
 *Note: ScoutX rejects API keys stored directly inside `config.json`. Only environment variable names (e.g. `"llm_api_key_env": "MY_KEY"`) are accepted.*
 
