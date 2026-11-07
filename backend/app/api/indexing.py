@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.common import APIModel, ErrorResponse, get_local_user_id
-from app.api.files import FileStatusCounts
+from app.api.files import FileStatusCounts, normalize_file_status
 from app.database.engine import get_db
 from app.database.models import File
 from app.database.repositories import IndexRootRepository
@@ -58,17 +58,7 @@ STATUS_KEYS = (
 
 
 def _api_status(db_status: str, metadata: dict) -> str:
-    if db_status == "queued":
-        return "pending"
-    if db_status == "excluded":
-        return "unsupported"
-    if db_status == "indexed" and (
-        metadata.get("extraction_status") == "partial"
-        or metadata.get("partial") is True
-        or metadata.get("extraction_error")
-    ):
-        return "partial"
-    return db_status if db_status in STATUS_KEYS else "pending"
+    return normalize_file_status(db_status, metadata)
 
 
 @router.get(
@@ -97,6 +87,8 @@ def indexing_status(
         if active
         else "failed"
         if counts["failed"]
+        else "partial"
+        if counts["partial"]
         else "idle"
     )
     last_reconciled = max(
@@ -106,7 +98,7 @@ def indexing_status(
     return IndexStatusResponse(
         state=state,
         files_discovered=sum(counts.values()) - counts["deleted"],
-        files_indexed=counts["indexed"] + counts["partial"],
+        files_indexed=counts["indexed"],
         files_failed=counts["failed"],
         status_counts=FileStatusCounts(**counts),
         roots_registered=sum(root.is_enabled for root in roots),
