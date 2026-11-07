@@ -5,13 +5,16 @@ description = "Local-first intelligent file recommendation backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.16,<2",
+    "celery[redis]>=5.7,<5.8",
     "fastapi>=0.115,<1",
     "psycopg[binary]>=3.2,<4",
     "pydantic>=2.10,<3",
     "pydantic-settings>=2.7,<3",
+    "python-magic>=0.4.27,<0.5",
     "qdrant-client>=1.12,<2",
     "redis>=5,<7",
     "sqlalchemy>=2.0.40,<2.1",
+    "watchdog>=7.1,<8",
 ]
 
 [dependency-groups]
