@@ -27,12 +27,14 @@ export interface SearchResponse {
 
 export interface FileRecord {
   id: string
+  root_id: string
   name: string
   path: string
   mime_type?: string | null
-  size_bytes?: number | null
+  size_bytes: number
   modified_at?: string | null
-  indexing_status: string
+  indexing_status: 'pending' | 'processing' | 'indexed' | 'partial' | 'failed' | 'unsupported' | 'deleted'
+  extraction_error?: string | null
 }
 
 export interface FileListResponse {
@@ -46,7 +48,8 @@ export interface RootRecord {
   id: string
   path: string
   display_name?: string | null
-  status: string
+  status: 'enabled' | 'disabled'
+  last_reconciled_at?: string | null
 }
 
 export interface IndexStatus {
@@ -54,7 +57,16 @@ export interface IndexStatus {
   files_discovered: number
   files_indexed: number
   files_failed: number
+  status_counts: Record<FileRecord['indexing_status'], number>
+  roots_registered: number
   last_reconciled_at?: string | null
+}
+
+export interface ReconcileResponse {
+  accepted: boolean
+  root_ids: string[]
+  task_ids: Array<string | null>
+  submitted_at: string
 }
 
 export class APIRequestError extends Error {
@@ -103,7 +115,11 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }),
-  files: (limit = 50, offset = 0) => request<FileListResponse>(`/files?limit=${limit}&offset=${offset}`),
+  files: (limit = 50, offset = 0, rootId?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+    if (rootId) params.set('root_id', rootId)
+    return request<FileListResponse>(`/files?${params.toString()}`)
+  },
   roots: () => request<{ items: RootRecord[] }>('/roots'),
   addRoot: (path: string, displayName?: string) => request<RootRecord>('/roots', {
     method: 'POST',
@@ -112,6 +128,11 @@ export const api = {
   }),
   removeRoot: (id: string) => request<void>(`/roots/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   indexStatus: () => request<IndexStatus>('/index/status'),
+  reconcile: (rootId?: string) => request<ReconcileResponse>('/index/reconcile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rootId ? { root_id: rootId } : {}),
+  }),
   feedback: (fileId: string, action: 'opened' | 'helpful' | 'not_helpful' | 'dismissed', query?: string) =>
     request<{ accepted: boolean }>('/feedback', {
       method: 'POST',
