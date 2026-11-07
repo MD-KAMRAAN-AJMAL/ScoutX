@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "file_chunks"
     redis_url: RedisDsn = Field(default="redis://localhost:6379/0")
+    excluded_paths: list[str] = Field(default_factory=list)
     sql_echo: bool = False
     db_pool_size: int = Field(default=5, ge=1, le=100)
     db_max_overflow: int = Field(default=10, ge=0, le=100)
