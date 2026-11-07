@@ -1,0 +1,1 @@
+"""ScoutX backend application package."""
