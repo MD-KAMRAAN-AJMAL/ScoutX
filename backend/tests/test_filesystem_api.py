@@ -214,7 +214,11 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
             size_bytes=4096,
             modified_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
             indexing_status="indexed",
-            extra_metadata={"extraction_status": "partial", "extraction_error": "Page 2 unreadable"},
+            extra_metadata={
+                "parser_status": "partial",
+                "extraction_warnings": ["Page 2 contains no extractable text"],
+                "extraction_error": "Page 2 unreadable",
+            },
         )
     ]
 
@@ -226,6 +230,8 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
     assert item["size_bytes"] == 4096
     assert item["modified_at"] == "2026-01-02T00:00:00Z"
     assert item["indexing_status"] == "partial"
+    assert item["parser_status"] == "partial"
+    assert item["extraction_warnings"] == ["Page 2 contains no extractable text"]
     assert item["extraction_error"] == "Page 2 unreadable"
 
 
@@ -236,7 +242,7 @@ def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> N
     api_dependencies.status_rows = [
         ("queued", {}),
         ("processing", {}),
-        ("indexed", {"partial": True}),
+        ("indexed", {"parser_status": "partial"}),
         ("failed", {}),
         ("excluded", {}),
         ("deleted", {}),
@@ -254,6 +260,8 @@ def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> N
         "unsupported": 1,
         "deleted": 1,
     }
+    assert response.json()["files_indexed"] == 0
+    assert response.json()["state"] == "processing"
 
 
 def test_reconcile_requires_dispatcher_and_queues_when_configured() -> None:
