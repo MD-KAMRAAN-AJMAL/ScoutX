@@ -39,6 +39,8 @@ class FileRecord(APIModel):
     size_bytes: int = Field(ge=0)
     modified_at: datetime | None = None
     indexing_status: FileStatus
+    parser_status: str | None = None
+    extraction_warnings: list[Any] = Field(default_factory=list)
     extraction_error: str | None = None
 
 
@@ -59,7 +61,14 @@ class FileStatusCounts(APIModel):
     deleted: int = 0
 
 
-def _normalized_status(db_status: str, extra_metadata: dict[str, Any]) -> FileStatus:
+def normalize_file_status(db_status: str, extra_metadata: dict[str, Any]) -> FileStatus:
+    parser_status = extra_metadata.get("parser_status")
+    if (
+        db_status == "indexed"
+        and isinstance(parser_status, str)
+        and parser_status in {"partial", "failed", "unsupported"}
+    ):
+        return cast(FileStatus, parser_status)
     extraction_state = extra_metadata.get("extraction_status")
     if db_status == "excluded":
         return "unsupported"
@@ -82,6 +91,11 @@ def _extraction_error(extra_metadata: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _extraction_warnings(extra_metadata: dict[str, Any]) -> list[Any]:
+    warnings = extra_metadata.get("extraction_warnings", [])
+    return warnings if isinstance(warnings, list) else []
+
+
 def _file_response(file: File) -> FileRecord:
     metadata = file.extra_metadata if isinstance(file.extra_metadata, dict) else {}
     return FileRecord(
@@ -92,7 +106,9 @@ def _file_response(file: File) -> FileRecord:
         mime_type=file.mime_type,
         size_bytes=file.size_bytes,
         modified_at=file.modified_at,
-        indexing_status=_normalized_status(file.indexing_status, metadata),
+        indexing_status=normalize_file_status(file.indexing_status, metadata),
+        parser_status=metadata.get("parser_status") if isinstance(metadata.get("parser_status"), str) else None,
+        extraction_warnings=_extraction_warnings(metadata),
         extraction_error=_extraction_error(metadata),
     )
 
