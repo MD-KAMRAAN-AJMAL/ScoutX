@@ -16,8 +16,10 @@ export function SearchPage() {
       const result = await api.search({ query })
       setFiles(result.results.map((item) => ({
         id: item.file_id,
+        root_id: '',
         name: item.name,
         path: item.path,
+        size_bytes: 0,
         indexing_status: 'indexed',
       })))
       setNotice(result.answer ?? `${result.results.length} matching files`)
