@@ -53,9 +53,11 @@ export function FileList({ files = [], message }: FileListProps) {
             <h3 className="truncate text-sm font-semibold text-[#27352e]">{file.name}</h3>
             <p className="truncate text-xs text-[#929c95]">{file.path}</p>
             <p className="mt-1 text-xs text-[#929c95]">{file.mime_type ?? 'Unknown type'} · {formatSize(file.size_bytes)} · Modified {formatDate(file.modified_at)}</p>
+            {file.parser_status && <p className="mt-1 text-xs text-[#6f7d74]">Parser: {file.parser_status}</p>}
+            {!!file.extraction_warnings?.length && <ul className="mt-1 list-inside list-disc text-xs text-[#926b24]">{file.extraction_warnings.map((warning, index) => <li key={`${file.id}-warning-${index}`}>{typeof warning === 'string' ? warning : JSON.stringify(warning)}</li>)}</ul>}
             {file.extraction_error && <p className="mt-1 break-words text-xs text-[#a44f40]">Extraction error: {file.extraction_error}</p>}
           </div>
-          <span className={`shrink-0 rounded-full px-3 py-1 text-xs capitalize ${statusStyles[file.indexing_status]}`}>{file.indexing_status}</span>
+          <span className={`shrink-0 rounded-full px-3 py-1 text-xs ${statusStyles[file.indexing_status]}`}>{file.indexing_status === 'indexed' ? 'Fully indexed' : file.indexing_status === 'partial' ? 'Partially indexed' : file.indexing_status}</span>
         </article>
       ))}
     </div>

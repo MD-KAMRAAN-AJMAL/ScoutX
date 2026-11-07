@@ -3,8 +3,8 @@ import type { IndexStatus } from '../services/api'
 const statusLabels = [
   ['pending', 'Pending', 'text-[#75827a]'],
   ['processing', 'Processing', 'text-[#496b9d]'],
-  ['indexed', 'Indexed', 'text-[#367154]'],
-  ['partial', 'Partial', 'text-[#926b24]'],
+  ['indexed', 'Fully indexed', 'text-[#367154]'],
+  ['partial', 'Partially indexed', 'text-[#926b24]'],
   ['failed', 'Failed', 'text-[#a44f40]'],
   ['unsupported', 'Unsupported', 'text-[#725c92]'],
   ['deleted', 'Deleted', 'text-[#7c8380]'],
@@ -21,7 +21,7 @@ export function IndexingStatusCard({ status, unavailable = false }: IndexingStat
   const progress = discovered ? Math.min(100, Math.round((indexed / discovered) * 100)) : 0
   const indicator = unavailable || status?.state === 'failed'
     ? 'bg-[#d87868]'
-    : status?.state === 'pending' || status?.state === 'processing'
+    : status?.state === 'pending' || status?.state === 'processing' || status?.state === 'partial'
       ? 'bg-[#d7a65a]'
       : 'bg-[#54a77e]'
 
