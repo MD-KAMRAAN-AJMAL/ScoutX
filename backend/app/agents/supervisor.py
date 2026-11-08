@@ -10,6 +10,7 @@ from uuid import UUID
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from opentelemetry import trace
 from sqlalchemy.orm import Session
 
 from app.agents.graph import MAX_RETRIES, build_agent_graph
@@ -106,7 +107,7 @@ async def run_supervisor(
     }
     if checkpointer is not None:
         graph = build_agent_graph(**graph_args, checkpointer=checkpointer)
-        return await _execute_graph(graph, state, config)
+        return await _run_graph(graph, state, config, mode=mode)
 
     global _CHECKPOINTER_READY
     connection, saver = await _open_checkpointer()
@@ -117,7 +118,7 @@ async def run_supervisor(
                     await saver.setup()
                     _CHECKPOINTER_READY = True
         graph = build_agent_graph(**graph_args, checkpointer=saver)
-        return await _execute_graph(graph, state, config)
+        return await _run_graph(graph, state, config, mode=mode)
     finally:
         await connection.close()
 
@@ -133,3 +134,15 @@ async def _execute_graph(graph, state: dict[str, Any], config: dict[str, Any]) -
         raise RuntimeError("agent graph returned no state")
     final["execution_trace"] = trace
     return final
+
+
+async def _run_graph(graph, state, config, *, mode: str) -> dict[str, Any]:
+    tracer = trace.get_tracer("scoutx.agent")
+    with tracer.start_as_current_span("scoutx.agent.invoke") as span:
+        span.set_attribute("scoutx.search.mode", mode)
+        span.set_attribute("scoutx.search.answer_enabled", bool(state.get("generate_answer")))
+        final = await _execute_graph(graph, state, config)
+        span.set_attribute("scoutx.agent.retry_count", int(final.get("retry_count", 0)))
+        span.set_attribute("scoutx.agent.candidate_count", len(final.get("results", [])))
+        span.set_attribute("scoutx.agent.status", str(final.get("execution_result", "unknown")))
+        return final

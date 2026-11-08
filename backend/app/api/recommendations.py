@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from opentelemetry import trace
 from pydantic import Field
 from sqlalchemy.orm import Session
 
@@ -48,9 +49,14 @@ def get_recommendations(
     user_id: uuid.UUID = Depends(get_local_user_id),
 ) -> RecommendationListResponse:
     try:
-        items = RecommendationService(session, user_id).recommend(
-            category=category, limit=limit, extension=extension
-        )
+        with trace.get_tracer("scoutx.personalization").start_as_current_span(
+            "scoutx.recommendations.generate"
+        ) as span:
+            items = RecommendationService(session, user_id).recommend(
+                category=category, limit=limit, extension=extension
+            )
+            span.set_attribute("scoutx.recommendations.category", category)
+            span.set_attribute("scoutx.recommendations.result_count", len(items))
     except ValueError as exc:
         raise HTTPException(
             status_code=422,

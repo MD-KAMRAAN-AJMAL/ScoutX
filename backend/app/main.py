@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,18 +20,41 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api import feedback, files, indexing, personalization, recommendations, roots, search
 from app.config import get_settings
 from app.database.engine import engine
+from app.observability import (
+    TelemetryRuntime,
+    configure_structured_logging,
+    configure_telemetry,
+    install_correlation_log_context,
+)
+from app.security.api_middleware import APISafetyMiddleware
 from app.vectorstore.qdrant_client import QdrantStore
 
 logger = logging.getLogger(__name__)
 API_PREFIX = "/api/v1"
+_telemetry_runtime: TelemetryRuntime | None = None
+install_correlation_log_context()
+configure_structured_logging()
 
 
 def _allowed_origins() -> list[str]:
-    configured = os.getenv(
-        "SCOUTX_CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    )
-    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    configured = get_settings().cors_origins
+    origins = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    for origin in origins:
+        try:
+            parsed = urlsplit(origin)
+            host = parsed.hostname
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("CORS origins must be valid loopback origins") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or host not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("CORS origins must use localhost or a loopback IP address")
+    return origins
 
 
 @asynccontextmanager
@@ -45,6 +68,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if _telemetry_runtime is not None:
+            _telemetry_runtime.tracer_provider.shutdown()
+            _telemetry_runtime.meter_provider.shutdown()
         logger.info("Stopping ScoutX API")
 
 
@@ -59,9 +85,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins(),
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
+app.add_middleware(APISafetyMiddleware)
 
 
 @app.exception_handler(HTTPException)
@@ -86,15 +113,31 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
             "error": {
                 "code": "validation_error",
                 "message": "The request did not match the expected schema.",
-                "details": exc.errors(),
+                "details": {
+                    "fields": [
+                        {
+                            "location": [str(part) for part in error.get("loc", ())],
+                            "type": str(error.get("type", "invalid")),
+                        }
+                        for error in exc.errors()
+                    ]
+                },
             }
         },
     )
 
 
 @app.exception_handler(SQLAlchemyError)
-async def database_exception_handler(_: Request, exc: SQLAlchemyError) -> JSONResponse:
-    logger.exception("Database request failed", exc_info=exc)
+async def database_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    logger.error(
+        "Database request failed",
+        extra={
+            "component": "api",
+            "operation": "database",
+            "error_type": type(exc).__name__,
+            "request_id": getattr(request.state, "correlation_id", None),
+        },
+    )
     return JSONResponse(
         status_code=503,
         content={
@@ -108,8 +151,16 @@ async def database_exception_handler(_: Request, exc: SQLAlchemyError) -> JSONRe
 
 
 @app.exception_handler(Exception)
-async def unexpected_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Unhandled API exception")
+async def unexpected_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error(
+        "Unhandled API exception",
+        extra={
+            "component": "api",
+            "operation": "request",
+            "error_type": type(exc).__name__,
+            "request_id": getattr(request.state, "correlation_id", None),
+        },
+    )
     return JSONResponse(
         status_code=500,
         content={
@@ -146,7 +197,9 @@ def _check_qdrant() -> str:
 
 
 def _check_redis() -> str:
-    client = Redis.from_url(str(get_settings().redis_url), socket_connect_timeout=2)
+    client = Redis.from_url(
+        str(get_settings().redis_url), socket_connect_timeout=2, socket_timeout=2
+    )
     try:
         client.ping()
         return "available"
@@ -165,8 +218,15 @@ def _check_ollama() -> str:
 def _probe(check) -> str:
     try:
         return check()
-    except Exception:
-        logger.info("A health dependency check failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - a health probe must degrade, not fail the request
+        logger.info(
+            "A health dependency check failed",
+            extra={
+                "component": "health",
+                "dependency": check.__name__,
+                "error_type": type(exc).__name__,
+            },
+        )
         return "unavailable"
 
 
@@ -186,6 +246,28 @@ async def health() -> HealthResponse:
     )
 
 
+@app.get(f"{API_PREFIX}/live", tags=["health"], response_model=dict[str, str])
+async def liveness() -> dict[str, str]:
+    """Cheap process liveness check that does not contact dependencies."""
+    return {"status": "ok", "service": "scoutx-api"}
+
+
+@app.get(f"{API_PREFIX}/ready", tags=["health"], response_model=HealthResponse)
+async def readiness() -> HealthResponse:
+    """Readiness check; PostgreSQL and Qdrant are required, other services optional."""
+    result = await health()
+    if any(result.dependencies.get(service) != "available" for service in ("postgres", "qdrant")):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "dependencies_not_ready",
+                "message": "Core ScoutX search dependencies are temporarily unavailable.",
+                "details": result.dependencies,
+            },
+        )
+    return result
+
+
 app.include_router(search.router, prefix=API_PREFIX)
 app.include_router(files.router, prefix=API_PREFIX)
 app.include_router(roots.router, prefix=API_PREFIX)
@@ -200,3 +282,4 @@ app.add_api_route(
 app.include_router(feedback.router, prefix=API_PREFIX)
 app.include_router(personalization.router, prefix=API_PREFIX)
 app.include_router(recommendations.router, prefix=API_PREFIX)
+_telemetry_runtime = configure_telemetry(app)

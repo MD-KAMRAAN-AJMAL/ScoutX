@@ -128,3 +128,33 @@ The Settings page exposes the enable switch, type/folder preferences, recent act
 Offline ranking metrics (`precision@k`, `recall@k`, MRR, NDCG, and category diversity) are tested on controlled fixtures. They do not establish that personalization improves relevance for real users; that requires representative relevance judgments and a measured baseline.
 
 The derived profile is held in a bounded process-local cache for up to 30 seconds and invalidated when activity, feedback, preferences, or history are changed. This avoids repeating aggregation queries for rapid searches while bounding staleness across local worker processes.
+
+## Phase 10 security, performance, and reliability
+
+### Security assumptions and controls
+
+ScoutX's development API is single-user and local-only. `SCOUTX_API_LOCAL_ONLY=true` is enforced by middleware; setting it to false fails settings validation until a network authentication provider exists. Run Uvicorn on `127.0.0.1`; the middleware also rejects non-loopback clients if the server is accidentally bound to a public interface. CORS uses explicit localhost origins and permits only the methods used by the UI, including `PUT`. Do not expose the API through a reverse proxy or tunnel without adding an authentication boundary first.
+
+Request bodies are bounded by `SCOUTX_MAX_REQUEST_BODY_BYTES` (1 MiB by default), including streamed requests without `Content-Length`. Validation errors return field locations and error types without echoing rejected values. File APIs resolve a stable file ID to its registered root, require that root to remain enabled, and return a safe relative path. Discovery, recommendation, and detail checks reject symlink components and paths that resolve outside the authorized root. Retrieval hydration excludes disabled roots. These checks are re-run before scanning and parsing; a path can still race after validation, and this is not an `openat`-based filesystem sandbox.
+
+Parser inputs default to a 512 MiB maximum (`SCOUTX_PARSER_MAX_FILE_BYTES`). ZIP-based office formats are checked for unsafe member paths, entry count, member size, expanded size, and extreme compression ratio before parser libraries inspect them. External media tools are invoked with argument arrays, no shell, restricted environment variables, and bounded timeouts (`SCOUTX_PARSER_TIMEOUT_SECONDS`, 300 seconds by default). Celery uses two worker processes by default and applies a 55-minute soft and 60-minute hard task limit; tune with `SCOUTX_WORKER_CONCURRENCY`, `SCOUTX_WORKER_TASK_SOFT_LIMIT_SECONDS`, and `SCOUTX_WORKER_TASK_HARD_LIMIT_SECONDS` for the host. Parser instances are reused within each worker process to avoid reloading heavyweight media models for each file.
+
+These controls are not an OS-level parser sandbox. Docling, OCR, Tree-sitter, spreadsheets, and Tika run in the worker process; Python libraries cannot be forcibly stopped by Celery's task timeout until the worker process is terminated. Tika's own server process lifecycle is not fully controlled by the Python timeout. Keep indexing limited to files you trust and run the worker as the normal desktop user, never as root. No general archive extraction endpoint exists.
+
+SQLAlchemy uses parameterized statements, connection pre-ping, a five-second PostgreSQL connect timeout, and a bounded pool wait. Qdrant calls have a five-second default timeout. Existing candidate, reranker, context, activity-history, and recommendation limits remain in place. The profile cache remains bounded and invalidated on writes. No schema migration or indexing behavior change was required for these controls.
+
+### Health, logs, and traces
+
+- `GET /api/v1/live` reports process liveness without contacting dependencies.
+- `GET /api/v1/ready` requires PostgreSQL and Qdrant; Redis and Ollama are reported as optional dependencies.
+- `GET /api/v1/health` preserves the existing all-dependency status response.
+
+API logs are emitted as JSON with a server-generated `X-Request-ID`, route template, method, status, and duration. They omit request bodies, raw query text, interpolated log arguments, and absolute filesystem paths. Existing agent, reranker, and parser logs add operation and duration/status context. Request validation errors do not reflect user-provided values. React renders file-derived text through ordinary text nodes; it does not use raw HTML rendering or construct filesystem URLs.
+
+OpenTelemetry API traces and aggregate request count/duration metrics are opt-in. Leave `SCOUTX_OTEL_ENABLED=false` for local-only operation with no telemetry export. To enable export, configure `SCOUTX_OTEL_ENABLED=true` and `SCOUTX_OTEL_EXPORTER_ENDPOINT` with a trusted OTLP/HTTP collector base URL (for example `http://127.0.0.1:4318`). FastAPI, SQLAlchemy, HTTPX, the agent invocation, extraction/chunking, and recommendation generation are instrumented. No collector or third-party telemetry service is started by Docker Compose. Never configure an untrusted exporter; traces can contain route and database operation metadata, though ScoutX does not add raw queries, file contents, or paths as custom span attributes.
+
+### Audit notes and verification limits
+
+The audit found concrete gaps in local API exposure enforcement, body-size bounds, PUT CORS support for preferences, symlink-parent/root revalidation in file reads, unbounded default Celery worker concurrency/task time, parser ZIP handling, and dependency health checks sharing one route. Those are addressed above. Existing controls retained include Pydantic request schemas, user-scoped SQL/Qdrant retrieval, query and pagination limits, content-based MIME detection, `O_NOFOLLOW` for final file hashing, no-shell FFmpeg invocation, bounded graph retries/tool allowlists, citation ID validation, and React text rendering.
+
+No external rate limiter was added: the API is restricted to loopback and search/body limits already apply. No CSP header was added because Vite serves the UI separately and its development server needs its own header policy. The local test suite verifies the new middleware, path checks, archive checks, and subprocess timeout; it does not prove race-free filesystem access or isolate parser memory/CPU. OpenTelemetry export and live PostgreSQL/Qdrant/Redis/worker startup require external services and were not verified by the default unit suite.
