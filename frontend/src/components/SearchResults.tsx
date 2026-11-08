@@ -35,6 +35,7 @@ export function SearchResults({ files, query, runId, onSelect }: SearchResultsPr
             <button type="button" onClick={() => { void feedback(file.file_id, 'selected'); onSelect(file, chunk?.chunk_id ?? undefined) }} className="text-left text-sm font-semibold text-[#27352e] hover:text-[#246246]">{file.file_name}</button>
             <p className="mt-1 truncate text-xs text-[#929c95]">{file.file_path}</p>
             <p className="mt-1 text-xs text-[#829087]">{file.mime_type ?? file.extension ?? 'File'} · {file.retrieval_sources.join(', ') || 'retrieval'} · Result {index + 1}</p>
+            {!!file.personalization_reasons?.length && <p className="mt-2 text-xs text-[#47765c]">{file.personalization_reasons.join(' · ')}</p>}
             {chunk && <div className="mt-3 rounded-xl bg-[#f7f9f7] p-3">
               <p className="mb-1 text-[11px] font-medium text-[#819087]">{reference(chunk)}</p>
               <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#536158]">{chunk.snippet}</p>

@@ -21,4 +21,19 @@ describe('API client', () => {
 
     await expect(api.health(controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
   })
+
+  it('uses the personalized recommendation and preference API contracts', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], category: 'related', limit: 5 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await api.recommendations('related', 5, '.py')
+    expect(fetchMock.mock.calls[0][0]).toContain('/recommendations?category=related&limit=5&extension=.py')
+
+    const preferences = {
+      personalization_enabled: false, preferred_extensions: ['.py'], excluded_extensions: [],
+      preferred_root_ids: [], excluded_root_ids: [], recommendation_limit: 12,
+    }
+    await api.updatePersonalizationPreferences(preferences)
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual(preferences)
+  })
 })
