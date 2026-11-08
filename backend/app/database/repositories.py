@@ -9,10 +9,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.database.models import (
@@ -431,6 +431,9 @@ class PreferenceRepository:
         else:
             record.preferences = preferences
         self.session.flush()
+        from app.personalization.profile import invalidate_profile_cache
+
+        invalidate_profile_cache(user_id)
         return record
 
 
@@ -460,6 +463,24 @@ class ProjectRepository:
 
 
 class ActivityRepository:
+    EVENT_TYPES = frozenset(
+        {
+            "search_performed",
+            "search_result_opened",
+            "file_opened",
+            "file_previewed",
+            "opened",
+            "selected",
+            "recommendation_clicked",
+            "recommendation_dismissed",
+            "feedback_positive",
+            "feedback_negative",
+        }
+    )
+    SAFE_DETAIL_KEYS = frozenset(
+        {"mode", "result_count", "agent_run_id", "action", "category", "source"}
+    )
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
@@ -471,6 +492,8 @@ class ActivityRepository:
         file_id: uuid.UUID | None = None,
         details: dict | None = None,
     ) -> FileActivity:
+        if event_type not in self.EVENT_TYPES:
+            raise ValueError("Unsupported activity event type")
         if (
             file_id
             and self.session.scalar(
@@ -479,12 +502,87 @@ class ActivityRepository:
             is None
         ):
             raise LookupError("File does not exist for this user")
+        safe_details = {
+            key: value
+            for key, value in (details or {}).items()
+            if key in self.SAFE_DETAIL_KEYS and isinstance(value, (str, int, float, bool))
+        }
+        if file_id is not None and event_type != "search_performed":
+            duplicate = self.session.scalar(
+                select(FileActivity)
+                .where(
+                    FileActivity.user_id == user_id,
+                    FileActivity.file_id == file_id,
+                    FileActivity.event_type == event_type,
+                    FileActivity.created_at >= datetime.now(UTC) - timedelta(seconds=5),
+                )
+                .order_by(FileActivity.created_at.desc())
+                .limit(1)
+            )
+            if duplicate is not None:
+                return duplicate
+        if event_type == "search_performed":
+            dedupe_after = datetime.now(UTC) - timedelta(seconds=15)
+            duplicate = self.session.scalar(
+                select(FileActivity.id).where(
+                    FileActivity.user_id == user_id,
+                    FileActivity.event_type == event_type,
+                    FileActivity.created_at >= dedupe_after,
+                    FileActivity.details["agent_run_id"].astext
+                    == safe_details.get("agent_run_id", ""),
+                )
+            )
+            if duplicate:
+                return self.session.get(FileActivity, duplicate)
         activity = FileActivity(
-            user_id=user_id, file_id=file_id, event_type=event_type, details=details or {}
+            user_id=user_id, file_id=file_id, event_type=event_type, details=safe_details
         )
         self.session.add(activity)
         self.session.flush()
+        from app.personalization.profile import invalidate_profile_cache
+
+        invalidate_profile_cache(user_id)
         return activity
+
+    def list_for_user(
+        self,
+        user_id: uuid.UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        event_type: str | None = None,
+    ) -> Sequence[tuple[FileActivity, str | None, str | None]]:
+        _validate_page(limit, offset)
+        statement = (
+            select(FileActivity, File.filename, File.extension)
+            .outerjoin(
+                File,
+                (File.id == FileActivity.file_id) & (File.user_id == FileActivity.user_id),
+            )
+            .where(FileActivity.user_id == user_id)
+        )
+        if event_type is not None:
+            if event_type not in self.EVENT_TYPES:
+                raise ValueError("Unsupported activity event type")
+            statement = statement.where(FileActivity.event_type == event_type)
+        return self.session.execute(
+            statement.order_by(FileActivity.created_at.desc(), FileActivity.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+
+    def count_for_user(self, user_id: uuid.UUID, *, event_type: str | None = None) -> int:
+        statement = select(func.count(FileActivity.id)).where(FileActivity.user_id == user_id)
+        if event_type is not None:
+            statement = statement.where(FileActivity.event_type == event_type)
+        return self.session.scalar(statement) or 0
+
+    def clear_for_user(self, user_id: uuid.UUID) -> int:
+        result = self.session.execute(delete(FileActivity).where(FileActivity.user_id == user_id))
+        from app.personalization.profile import invalidate_profile_cache
+
+        invalidate_profile_cache(user_id)
+        return int(result.rowcount or 0)
 
 
 class AgentRunRepository:
@@ -522,12 +620,68 @@ class RecommendationFeedbackRepository:
             is None
         ):
             raise LookupError("Agent run does not exist for this user")
+        # Repeated taps do not accumulate unbounded weight. A later correction to
+        # the action updates the latest signal for this file instead.
+        explicit_actions = {
+            "relevant",
+            "not_relevant",
+            "helpful",
+            "not_helpful",
+            "useful",
+            "not_useful",
+            "dismissed",
+        }
+        recent_cutoff = datetime.now(UTC) - timedelta(minutes=5)
+        previous = (
+            self.session.scalar(
+                select(RecommendationFeedback)
+                .where(
+                    RecommendationFeedback.user_id == user_id,
+                    RecommendationFeedback.file_id == data.file_id,
+                    RecommendationFeedback.action.in_(explicit_actions),
+                    RecommendationFeedback.created_at >= recent_cutoff,
+                )
+                .order_by(RecommendationFeedback.created_at.desc())
+                .limit(1)
+            )
+            if data.action in explicit_actions
+            else None
+        )
+        if previous is not None:
+            previous.action = data.action
+            previous.rating = data.rating
+            previous.agent_run_id = data.agent_run_id
+            previous.feedback_text = None
+            self.session.flush()
+            from app.personalization.profile import invalidate_profile_cache
+
+            invalidate_profile_cache(user_id)
+            return previous
         record = RecommendationFeedback(user_id=user_id, **data.model_dump())
         self.session.add(record)
         self.session.flush()
+        from app.personalization.profile import invalidate_profile_cache
+
+        invalidate_profile_cache(user_id)
         return record
+
+    def clear_for_user(self, user_id: uuid.UUID) -> int:
+        result = self.session.execute(
+            delete(RecommendationFeedback).where(RecommendationFeedback.user_id == user_id)
+        )
+        from app.personalization.profile import invalidate_profile_cache
+
+        invalidate_profile_cache(user_id)
+        return int(result.rowcount or 0)
 
 
 def _validate_limit(limit: int) -> None:
     if limit < 1 or limit > 1000:
         raise ValueError("limit must be between 1 and 1000")
+
+
+def _validate_page(limit: int, offset: int) -> None:
+    if limit < 1 or limit > 200:
+        raise ValueError("limit must be between 1 and 200")
+    if offset < 0:
+        raise ValueError("offset must be nonnegative")

@@ -12,6 +12,8 @@ class RerankedCandidate(BaseModel):
     original_retrieval_score: float = Field(ge=0)
     reranker_score: float = Field(ge=0, le=1)
     final_score: float = Field(ge=0, le=1)
+    personalization_adjustment: float = Field(default=0.0, ge=-0.07, le=0.08)
+    personalization_reasons: list[str] = Field(default_factory=list)
 
 
 class SupportingChunk(BaseModel):
@@ -40,6 +42,7 @@ class FileRecommendation(BaseModel):
     score: float = Field(ge=0, le=1)
     scoring_method: str = "best_chunk_plus_capped_support"
     retrieval_sources: list[str] = Field(default_factory=list)
+    personalization_reasons: list[str] = Field(default_factory=list)
     supporting_chunks: list[SupportingChunk]
 
 

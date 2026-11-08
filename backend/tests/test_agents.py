@@ -4,9 +4,11 @@ import asyncio
 import json
 from contextlib import nullcontext
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import BackgroundTasks
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -16,6 +18,7 @@ from app.agents.planner import deterministic_understanding, plan_retrieval, unde
 from app.agents.schemas import QueryUnderstanding
 from app.agents.tools import make_retrieval_tools
 from app.api.search import SearchRequest, search_files
+from app.personalization.profile import UserProfile
 from app.reranking.schemas import RerankedCandidate
 from app.retrieval.common import SearchCandidate
 
@@ -206,7 +209,10 @@ def test_api_returns_trace_sources_and_conversation_id(monkeypatch):
     monkeypatch.setattr("app.api.search.run_supervisor", fake_run)
     response = asyncio.run(
         search_files(
-            SearchRequest(query="Find FlashAttention", conversation_id=uuid4()), USER, FakeSession()
+            SearchRequest(query="Find FlashAttention", conversation_id=uuid4()),
+            background_tasks=BackgroundTasks(),
+            user_id=USER,
+            session=FakeSession(),
         )
     )
     assert response.results[0].source_reference == "page 3"
@@ -239,7 +245,14 @@ def test_search_api_returns_safe_503_for_supervisor_failure(monkeypatch):
 
     monkeypatch.setattr("app.api.search.run_supervisor", fail)
     with pytest.raises(Exception) as error:
-        asyncio.run(search_files(SearchRequest(query="Find a file"), USER, FakeSession()))
+        asyncio.run(
+            search_files(
+                SearchRequest(query="Find a file"),
+                background_tasks=BackgroundTasks(),
+                user_id=USER,
+                session=FakeSession(),
+            )
+        )
     assert getattr(error.value, "status_code", None) == 503
     assert "private stack detail" not in str(error.value.detail)
 
@@ -475,6 +488,98 @@ def test_graph_applies_search_extension_filter_after_retrieval(tmp_path):
         assert final["results"][0]["extension"] == ".pdf"
 
     asyncio.run(exercise())
+
+
+def test_graph_personalization_adjusts_order_without_changing_retrieved_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    pdf_path = tmp_path / "guide.pdf"
+    code_path = tmp_path / "guide.py"
+    pdf_path.write_text("guide", encoding="utf-8")
+    code_path.write_text("guide", encoding="utf-8")
+    pdf_id, code_id = uuid4(), uuid4()
+    root_id = uuid4()
+    profile = UserProfile(
+        preferences={"personalization_enabled": True}, preferred_extensions=(".py",)
+    )
+    monkeypatch.setattr("app.agents.graph.cached_user_profile", lambda *_args: profile)
+
+    class GraphSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [(pdf_id, root_id), (code_id, root_id)])
+
+    hits = [
+        SearchCandidate(
+            file_id=file_id,
+            chunk_id=uuid4(),
+            file_name=path.name,
+            file_path=str(path),
+            content="The same relevant machine learning guidance.",
+            modality="text",
+            extension=extension,
+            relevance_score=0.65,
+            retrieval_method="semantic",
+        ).model_dump(mode="json")
+        for file_id, path, extension in (
+            (pdf_id, pdf_path, ".pdf"),
+            (code_id, code_path, ".py"),
+        )
+    ]
+
+    @tool
+    def semantic(query: str, limit: int = 20) -> str:
+        """Search semantic file content."""
+        return json.dumps(hits)
+
+    async def exercise(personalization_enabled: bool | None = None):
+        run_id = uuid4()
+        graph = build_agent_graph(
+            user_id=USER,
+            run_id=run_id,
+            retrieval_tools=[semantic],
+            checkpointer=MemorySaver(),
+            session_factory=GraphSession,
+            context_loader=lambda _session, _user: {},
+            run_recorder=lambda _state: None,
+            reranker=_identity_reranker,
+            generate_answer=False,
+            personalization_enabled=personalization_enabled,
+        )
+        return await graph.ainvoke(
+            {
+                "original_query": "Explain machine learning from my notes",
+                "query": "Explain machine learning from my notes",
+                "request_mode": "semantic",
+                "run_id": str(run_id),
+                "retry_count": 0,
+                "max_retries": 0,
+                "tools_invoked": [],
+                "candidate_counts": {},
+                "results": [],
+                "errors": [],
+                "execution_trace": [],
+                "generate_answer": False,
+            },
+            {"configurable": {"thread_id": str(uuid4())}},
+        )
+
+    final = asyncio.run(exercise())
+    assert final["personalization_status"] == "available"
+    assert final["results"][0]["file_id"] == str(code_id)
+    assert final["results"][0]["content"] == hits[1]["content"]
+    assert final["reranked_candidates"][0]["personalization_adjustment"] > 0
+    assert final["files"][0]["personalization_reasons"] == ["Matches a file type you prefer"]
+
+    baseline = asyncio.run(exercise(False))
+    assert baseline["personalization_status"] == "disabled"
+    assert baseline["results"][0]["file_id"] == str(pdf_id)
+    assert all(item["personalization_adjustment"] == 0 for item in baseline["reranked_candidates"])
 
 
 def test_graph_produces_file_context_citations_and_supports_retrieval_only(tmp_path):

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.api.common import APIModel, ErrorResponse, get_local_user_id
 from app.database.engine import get_db
 from app.database.models import AgentRun
 from app.database.repositories import AgentRunRepository, FileRepository
+from app.personalization.activity import record_activity_background
 from app.reranking.schemas import AnswerCitation, FileRecommendation
 from app.retrieval.common import SearchCandidate
 
@@ -89,12 +90,14 @@ class SearchResponse(APIModel):
     citations: list[AnswerCitation] = Field(default_factory=list)
     reranking_status: str = "unknown"
     generation_status: str = "unknown"
+    personalization_status: str = "unknown"
     latency_ms: dict[str, float] = Field(default_factory=dict)
 
 
 @router.post("", response_model=SearchResponse, responses={503: {"model": ErrorResponse}})
 async def search_files(
     request: SearchRequest,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_local_user_id),
     session: Session = Depends(get_db),
 ) -> SearchResponse:
@@ -183,6 +186,16 @@ async def search_files(
                 }
             )
         )
+    background_tasks.add_task(
+        record_activity_background,
+        user_id,
+        "search_performed",
+        details={
+            "mode": request.mode,
+            "result_count": len(candidates),
+            "agent_run_id": str(run.id),
+        },
+    )
     return SearchResponse(
         query=request.query,
         response_mode="answer" if request.generate_answer else "retrieval_only",
@@ -215,6 +228,7 @@ async def search_files(
         citations=citations,
         reranking_status=state.get("reranking_status", "unknown"),
         generation_status=state.get("generation_status", "unknown"),
+        personalization_status=state.get("personalization_status", "unknown"),
         latency_ms=state.get("latency_ms", {}),
     )
 

@@ -91,3 +91,40 @@ cd ../frontend && npm test && npm run build
 The health endpoint remains available when a dependency is down and reports `degraded` without returning connection strings. Search can return retrieval results even when answer generation fails. File paths shown in file/search responses are relative to the authorized folder; details and snippets are resolved through the authenticated file ID.
 
 Troubleshooting: confirm Docker services are running, `backend/.env` points to their addresses, Ollama is serving the configured model for answer generation, and `SCOUTX_CORS_ORIGINS` includes the frontend origin (`http://127.0.0.1:5173` by default). The frontend displays an API or dependency error when a service cannot be reached.
+
+## Phase 9 personalization
+
+Personalization reuses `file_activity`, `user_preferences`, `recommendation_feedback`, active PostgreSQL chunks, and the existing Qdrant `file_content_chunks` collection. No additional database table, model, or environment variable is required. The profile is derived on demand from at most 1,000 access events and feedback records from the previous 180 days; raw activity details and document content are not included in the profile or activity API. Search-run records continue to use the existing `agent_runs.query` field.
+
+Activity is recorded for search submission, file opening/selection, recommendation dismissal, and positive/negative feedback. Search activity retains mode, result count, and the associated run ID, but not a copy of the query. Best-effort search activity is written after the HTTP response. Repeated same-file activity within five seconds and repeated searches for the same run within fifteen seconds are coalesced. Explicit feedback supersedes the most recent explicit feedback for a file within five minutes; later feedback can change the signal.
+
+The profile derives preferred extensions and frequently used roots from access events. Access weights use a 30-day exponential half-life; explicit feedback uses a 60-day half-life; dismissal suppression is short-lived (30 days). The scoring adjustment is:
+
+```text
+delta = clamp(-0.07, +0.08,
+  0.025 * preferred_extension
+  + 0.025 * preferred_root
+  + 0.015 * decayed_extension_feedback
+  + 0.015 * decayed_root_feedback
+  + 0.03 * decayed_file_access
+  + 0.06 * latest_decayed_explicit_feedback)
+personalized_score = clamp(0, 1, reranker_score + delta)
+```
+
+Only existing retrieval candidates with reranker score at least `0.20` receive a boost or penalty. User exclusions are applied before scoring. With personalization disabled, search preserves the Phase 8 retrieval/reranking order. Grounded context and citations are then assembled from the same retrieved chunks in the resulting order.
+
+`GET /api/v1/recommendations` supports `recommended_for_you`, `recently_accessed`, `continue_working`, `frequently_used`, `related`, and `recently_indexed`. Related files use Qdrant recommendations seeded by active chunk points from files the user recently accessed or marked useful; the query reuses stored vectors and filters results by user and active status. PostgreSQL then hydrates the source file and checks its enabled root and current filesystem permissions. Cold-start users receive recently indexed files when available. Recommendation paths are relative to their authorized root.
+
+Personalization controls and data routes:
+
+- `GET /api/v1/personalization/profile` returns aggregate counts and preferences, not raw history.
+- `GET/PUT /api/v1/personalization/preferences` controls the feature, preferred/excluded file types, preferred/excluded authorized roots, and recommendation limit.
+- `GET/DELETE /api/v1/activity` pages through and clears activity plus explicit feedback.
+- `POST /api/v1/personalization/reset` resets the derived profile cutoff; pass `{"clear_activity_history": true}` to also delete activity and feedback.
+- `GET /api/v1/recommendations` returns stable file IDs, safe relative paths, categories, scores, and signal-based explanations.
+
+The Settings page exposes the enable switch, type/folder preferences, recent activity, profile reset, and a confirmation before history deletion. When disabled, the UI and search still use the existing search, file library, and reranker. Search-run query text remains in the pre-existing `agent_runs` record; clearing activity removes `file_activity` and `recommendation_feedback`, not those search-run records.
+
+Offline ranking metrics (`precision@k`, `recall@k`, MRR, NDCG, and category diversity) are tested on controlled fixtures. They do not establish that personalization improves relevance for real users; that requires representative relevance judgments and a measured baseline.
+
+The derived profile is held in a bounded process-local cache for up to 30 seconds and invalidated when activity, feedback, preferences, or history are changed. This avoids repeating aggregation queries for rapid searches while bounding staleness across local worker processes.

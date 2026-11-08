@@ -66,6 +66,11 @@ def aggregate_files(
                 mime_type=candidate.mime_type,
                 score=file_score,
                 retrieval_sources=sorted({item.candidate.retrieval_method for item in distinct}),
+                personalization_reasons=list(
+                    dict.fromkeys(
+                        reason for item in distinct for reason in item.personalization_reasons
+                    )
+                ),
                 supporting_chunks=[
                     SupportingChunk(
                         chunk_id=str(item.candidate.chunk_id) if item.candidate.chunk_id else None,

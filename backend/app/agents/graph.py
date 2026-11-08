@@ -17,6 +17,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.agents.evaluator import evaluate_candidates
@@ -27,6 +28,8 @@ from app.agents.tools import make_retrieval_tools
 from app.database.engine import SessionLocal
 from app.database.models import AgentRun, File, FileActivity
 from app.database.repositories import PreferenceRepository
+from app.personalization.profile import cached_user_profile, empty_profile
+from app.personalization.scoring import personalize_ranked_candidates
 from app.reranking.context import aggregate_files, build_context
 from app.reranking.generation import generate_grounded_answer
 from app.reranking.schemas import GroundedContext, RerankedCandidate
@@ -93,6 +96,7 @@ def build_agent_graph(
     answer_generator: Callable[..., Any] | None = None,
     generate_answer: bool = True,
     search_filters: dict[str, Any] | None = None,
+    personalization_enabled: bool | None = None,
 ):
     """Build a graph with a fixed user identity and a closed retrieval-tool allowlist."""
     tools = retrieval_tools or make_retrieval_tools(user_id, session_factory)
@@ -118,7 +122,7 @@ def build_agent_graph(
 
         try:
             context = await asyncio.to_thread(load)
-        except Exception:
+        except (AttributeError, OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError):
             logger.exception("Unable to load search context")
             context = {"preferences": {}, "recent_files": []}
         return {"user_context": context, "execution_trace": _trace(state, "load_user_context")}
@@ -254,6 +258,60 @@ def build_agent_graph(
             "execution_trace": _trace(state, "rerank_results"),
         }
 
+    async def personalize_node(state: AgentState):
+        try:
+
+            def load_profile():
+                with session_factory() as session:
+                    profile = cached_user_profile(session, user_id)
+                    file_ids = {
+                        UUID(str(item.get("candidate", item).get("file_id")))
+                        for item in state.get("reranked_candidates", [])
+                        if item.get("candidate", item).get("file_id")
+                    }
+                    root_ids = {}
+                    if file_ids:
+                        root_ids.update(
+                            {
+                                str(file_id): str(root_id)
+                                for file_id, root_id in session.execute(
+                                    select(File.id, File.root_id).where(
+                                        File.user_id == user_id, File.id.in_(file_ids)
+                                    )
+                                ).all()
+                            }
+                        )
+                    return profile, root_ids
+
+            profile, file_root_ids = await asyncio.to_thread(load_profile)
+            effective_enabled = profile.enabled and personalization_enabled is not False
+            ranked = personalize_ranked_candidates(
+                state.get("reranked_candidates", []),
+                profile,
+                enabled=effective_enabled,
+                file_root_ids=file_root_ids,
+            )
+            status = "disabled" if not effective_enabled else profile.profile_status
+        except Exception:  # noqa: BLE001 - personalization must fall back without failing search
+            logger.info("Personalization profile unavailable; preserving reranker order")
+            profile = empty_profile(status="unavailable_fallback")
+            ranked = personalize_ranked_candidates(
+                state.get("reranked_candidates", []), profile, enabled=False
+            )
+            status = "unavailable_fallback"
+        reason_summary = list(
+            dict.fromkeys(
+                reason for item in ranked for reason in item.get("personalization_reasons", [])
+            )
+        )
+        return {
+            "reranked_candidates": ranked,
+            "results": [item["candidate"] for item in ranked],
+            "personalization_status": status,
+            "personalization_reasons": reason_summary,
+            "execution_trace": _trace(state, "personalize_results"),
+        }
+
     def evaluate_node(state: AgentState):
         parsed = QueryUnderstanding.model_validate(state["intent"])
         evaluation = evaluate_candidates(
@@ -343,6 +401,7 @@ def build_agent_graph(
         "plan_retrieval": plan_node,
         "execute_retrieval": execute_node,
         "rerank_results": rerank_node,
+        "personalize_results": personalize_node,
         "evaluate_results": evaluate_node,
         "expand_query": expand_node,
         "build_context": context_build_node,
@@ -356,7 +415,8 @@ def build_agent_graph(
     graph.add_edge("load_user_context", "plan_retrieval")
     graph.add_edge("plan_retrieval", "execute_retrieval")
     graph.add_edge("execute_retrieval", "rerank_results")
-    graph.add_edge("rerank_results", "evaluate_results")
+    graph.add_edge("rerank_results", "personalize_results")
+    graph.add_edge("personalize_results", "evaluate_results")
     graph.add_conditional_edges(
         "evaluate_results",
         route_after_evaluation,

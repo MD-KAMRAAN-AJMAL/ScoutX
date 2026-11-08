@@ -20,7 +20,15 @@ logger = logging.getLogger(__name__)
 class FeedbackRequest(APIModel):
     file_id: uuid.UUID
     action: Literal[
-        "opened", "selected", "relevant", "not_relevant", "helpful", "not_helpful", "dismissed"
+        "opened",
+        "selected",
+        "relevant",
+        "not_relevant",
+        "helpful",
+        "not_helpful",
+        "useful",
+        "not_useful",
+        "dismissed",
     ]
     query: str | None = Field(default=None, max_length=2000)
     agent_run_id: uuid.UUID | None = None
@@ -47,9 +55,9 @@ async def record_feedback(
 ) -> FeedbackResponse:
     rating = (
         5
-        if request.action in {"selected", "relevant", "helpful"}
+        if request.action in {"selected", "relevant", "helpful", "useful"}
         else 1
-        if request.action in {"not_relevant", "not_helpful", "dismissed"}
+        if request.action in {"not_relevant", "not_helpful", "not_useful", "dismissed"}
         else 3
     )
     try:
@@ -60,7 +68,7 @@ async def record_feedback(
                 agent_run_id=request.agent_run_id,
                 rating=rating,
                 action=request.action,
-                feedback_text=request.query,
+                feedback_text=None,
             ),
         )
         if request.action in {"opened", "selected"}:
@@ -68,7 +76,24 @@ async def record_feedback(
                 user_id,
                 request.action,
                 file_id=request.file_id,
-                details={"query": request.query} if request.query else {},
+            )
+        elif request.action == "dismissed":
+            ActivityRepository(session).record(
+                user_id, "recommendation_dismissed", file_id=request.file_id
+            )
+        elif request.action in {"relevant", "helpful", "useful"}:
+            ActivityRepository(session).record(
+                user_id,
+                "feedback_positive",
+                file_id=request.file_id,
+                details={"action": request.action},
+            )
+        elif request.action in {"not_relevant", "not_helpful", "not_useful"}:
+            ActivityRepository(session).record(
+                user_id,
+                "feedback_negative",
+                file_id=request.file_id,
+                details={"action": request.action},
             )
         session.commit()
     except LookupError as exc:
