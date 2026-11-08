@@ -34,6 +34,8 @@ export interface FileRecord {
   size_bytes: number
   modified_at?: string | null
   indexing_status: 'pending' | 'processing' | 'indexed' | 'partial' | 'failed' | 'unsupported' | 'deleted'
+  parser_status?: string | null
+  extraction_warnings?: unknown[]
   extraction_error?: string | null
 }
 
