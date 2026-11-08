@@ -129,6 +129,10 @@ Offline ranking metrics (`precision@k`, `recall@k`, MRR, NDCG, and category dive
 
 The derived profile is held in a bounded process-local cache for up to 30 seconds and invalidated when activity, feedback, preferences, or history are changed. This avoids repeating aggregation queries for rapid searches while bounding staleness across local worker processes.
 
+## Evaluation and benchmarks
+
+Phase 11's reproducible evaluation CLI, synthetic dataset, metric definitions, artifact/provider format, and limitations are documented in [evaluation/README.md](evaluation/README.md). The default smoke run is an offline lexical baseline and must not be interpreted as a production retrieval benchmark.
+
 ## Phase 10 security, performance, and reliability
 
 ### Security assumptions and controls
