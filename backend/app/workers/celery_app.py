@@ -24,10 +24,16 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    worker_concurrency=settings.worker_concurrency,
+    task_soft_time_limit=settings.worker_task_soft_limit_seconds,
+    task_time_limit=settings.worker_task_hard_limit_seconds,
+    task_store_errors_even_if_ignored=True,
     result_expires=3600,
+    broker_connection_timeout=5,
+    broker_pool_limit=5,
     broker_connection_retry_on_startup=True,
     broker_connection_max_retries=10,
-    broker_transport_options={"visibility_timeout": 3600},
+    broker_transport_options={"visibility_timeout": settings.worker_task_hard_limit_seconds + 300},
     beat_schedule={
         "reconcile-enabled-roots-every-six-hours": {
             "task": "scoutx.reconcile_enabled_roots",

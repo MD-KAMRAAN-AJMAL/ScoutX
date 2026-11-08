@@ -14,7 +14,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import httpx
 from celery import Task
+from kombu.exceptions import OperationalError as BrokerOperationalError
+from opentelemetry import trace
+from qdrant_client.http.exceptions import ApiException, ResponseHandlingException
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -26,14 +30,28 @@ from app.embeddings.service import EmbeddingService
 from app.ingestion.chunker import DocumentChunker
 from app.ingestion.fingerprints import FileChangedDuringHashing
 from app.ingestion.normalized import ExtractionStatus
-from app.ingestion.parser_registry import ParserRegistry
+from app.ingestion.parser_registry import get_default_registry
 from app.ingestion.scanner import FileScanner
-from app.security.permissions import RootUnavailableError, is_within, require_readable_directory
+from app.security.permissions import (
+    FilesystemPermissionError,
+    RootUnavailableError,
+    is_within,
+    require_readable_directory,
+    resolve_file_under_root,
+)
 from app.vectorstore.indexing import prepare_point, verify_point_batch
 from app.vectorstore.qdrant_client import get_qdrant_store
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+TRANSIENT_STORAGE_ERRORS = (
+    SQLAlchemyError,
+    ApiException,
+    ResponseHandlingException,
+    httpx.HTTPError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 class IndexingTask(Task):
@@ -109,7 +127,7 @@ def discover_file(
     base=IndexingTask,
     name="scoutx.process_file",
     max_retries=3,
-    autoretry_for=(Exception,),
+    autoretry_for=(SQLAlchemyError, BrokerOperationalError),
     retry_backoff=True,
     retry_jitter=True,
 )
@@ -175,12 +193,60 @@ def create_chunks(self: Task, user_id: str, file_id: str, version: int) -> dict[
             )
             or 0
         )
-        path, mime_type = file.canonical_path, file.mime_type
+        root = session.scalar(
+            select(IndexRoot).where(
+                IndexRoot.id == file.root_id,
+                IndexRoot.user_id == owner_id,
+                IndexRoot.is_enabled.is_(True),
+            )
+        )
+        if root is None:
+            job = _find_process_job(session, file, owner_id)
+            if job is not None:
+                job.status = "cancelled"
+                job.finished_at = datetime.now(UTC)
+                job.error_message = "Authorized folder was disabled before extraction"
+            session.commit()
+            return {"status": "root_disabled", "file_id": file_id}
+        try:
+            path = str(resolve_file_under_root(file.canonical_path, root.canonical_path))
+        except RootUnavailableError:
+            file.indexing_status = "queued"
+            job = _find_process_job(session, file, owner_id)
+            if job is not None:
+                job.status = "queued"
+                job.started_at = None
+                job.finished_at = None
+                job.error_message = None
+            session.commit()
+            return {"status": "root_unavailable", "file_id": file_id}
+        except FilesystemPermissionError:
+            logger.warning(
+                "Refusing to parse a file that is no longer safely accessible",
+                extra={"file_id": file_id, "root_id": str(root.id)},
+            )
+            file.indexing_status = "failed"
+            file.extra_metadata = {
+                **(file.extra_metadata or {}),
+                "filesystem_access_error": "File is no longer safely accessible under its authorized root",
+            }
+            job = _find_process_job(session, file, owner_id)
+            if job is not None:
+                job.status = "failed"
+                job.finished_at = datetime.now(UTC)
+                job.error_message = "File is no longer safely accessible under its authorized root"
+            session.commit()
+            return {"status": "inaccessible", "file_id": file_id}
+        mime_type = file.mime_type
     if existing_count:
         generate_embeddings.delay(str(owner_id), str(record_id), version)
         return {"status": "chunks_reused", "file_id": file_id, "chunks": existing_count}
 
-    extracted = ParserRegistry().parse(path, record_id, version, mime_type)
+    tracer = trace.get_tracer("scoutx.ingestion")
+    with tracer.start_as_current_span("scoutx.ingestion.extract") as span:
+        extracted = get_default_registry().parse(path, record_id, version, mime_type)
+        span.set_attribute("scoutx.ingestion.extraction_status", extracted.status.value)
+        span.set_attribute("scoutx.ingestion.block_count", len(extracted.blocks))
     if extracted.status in {ExtractionStatus.FAILED, ExtractionStatus.UNSUPPORTED}:
         _record_pipeline_error(
             owner_id,
@@ -190,7 +256,9 @@ def create_chunks(self: Task, user_id: str, file_id: str, version: int) -> dict[
             extracted.error or "; ".join(extracted.warnings),
         )
         return {"status": extracted.status.value, "file_id": file_id, "error": extracted.error}
-    chunks = DocumentChunker().chunk(extracted)
+    with tracer.start_as_current_span("scoutx.ingestion.chunk") as span:
+        chunks = DocumentChunker().chunk(extracted)
+        span.set_attribute("scoutx.ingestion.chunk_count", len(chunks))
     if not chunks:
         _record_pipeline_error(
             owner_id, record_id, version, "failed", "Extraction returned no chunkable content"
@@ -263,7 +331,7 @@ def create_chunks(self: Task, user_id: str, file_id: str, version: int) -> dict[
     base=IndexingTask,
     name="scoutx.generate_embeddings",
     max_retries=3,
-    autoretry_for=(Exception,),
+    autoretry_for=TRANSIENT_STORAGE_ERRORS,
     retry_backoff=True,
     retry_jitter=True,
 )
@@ -347,7 +415,7 @@ def generate_embeddings(self: Task, user_id: str, file_id: str, version: int) ->
     base=IndexingTask,
     name="scoutx.upsert_vectors",
     max_retries=3,
-    autoretry_for=(Exception,),
+    autoretry_for=TRANSIENT_STORAGE_ERRORS,
     retry_backoff=True,
     retry_jitter=True,
 )
@@ -426,7 +494,7 @@ def upsert_vectors(
     base=IndexingTask,
     name="scoutx.cleanup_old_version",
     max_retries=5,
-    autoretry_for=(Exception,),
+    autoretry_for=TRANSIENT_STORAGE_ERRORS,
     retry_backoff=True,
     retry_jitter=True,
 )
@@ -530,7 +598,7 @@ def reindex_file(self: Task, user_id: str, file_id: str) -> dict[str, Any]:
     bind=True,
     name="scoutx.delete_file",
     max_retries=3,
-    autoretry_for=(Exception,),
+    autoretry_for=TRANSIENT_STORAGE_ERRORS,
     retry_backoff=True,
     retry_jitter=True,
 )
@@ -574,7 +642,7 @@ def delete_file(self: Task, user_id: str, root_id: str, path: str) -> dict[str, 
     bind=True,
     name="scoutx.reconcile_root",
     max_retries=3,
-    autoretry_for=(Exception,),
+    autoretry_for=TRANSIENT_STORAGE_ERRORS,
     retry_backoff=True,
     retry_jitter=True,
 )

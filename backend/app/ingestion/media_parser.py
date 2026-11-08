@@ -8,6 +8,7 @@ from importlib.metadata import version
 from pathlib import Path
 from uuid import UUID
 
+from app.config import get_settings
 from app.ingestion.normalized import ExtractedDocument, ExtractionStatus, make_block
 from app.security.parser_sandbox import DEFAULT_LIMITS, run_tool, validate_input
 
@@ -70,7 +71,7 @@ class MediaParser:
                         "wav",
                         str(wav_path),
                     ],
-                    timeout=DEFAULT_LIMITS.subprocess_timeout_seconds,
+                    timeout=get_settings().parser_subprocess_timeout_seconds,
                 )
                 if not wav_path.is_file() or wav_path.stat().st_size <= 44:
                     raise ValueError("FFmpeg produced no audio track")
@@ -126,7 +127,7 @@ class MediaParser:
                 "json",
                 str(path),
             ],
-            timeout=30,
+            timeout=min(30, get_settings().parser_subprocess_timeout_seconds),
         )
         return json.loads(result.stdout or "{}")
 

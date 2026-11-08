@@ -33,7 +33,11 @@ class QdrantStore:
         if client is None:
             from qdrant_client import QdrantClient as Client
 
-            client = Client(url=str(settings.qdrant_url), api_key=settings.qdrant_api_key)
+            client = Client(
+                url=str(settings.qdrant_url),
+                api_key=settings.qdrant_api_key,
+                timeout=settings.qdrant_timeout_seconds,
+            )
         self.client = client
         self._ready = False
 

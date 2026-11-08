@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from uuid import UUID
@@ -160,6 +161,12 @@ class ParserRegistry:
                 parser_version=_parser_version(parser),
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+
+@lru_cache(maxsize=1)
+def get_default_registry() -> ParserRegistry:
+    """Reuse lazy parser instances within a worker process (not across processes)."""
+    return ParserRegistry()
 
 
 def _parser_version(parser) -> str:
