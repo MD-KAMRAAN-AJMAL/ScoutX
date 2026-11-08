@@ -135,6 +135,46 @@ def test_local_only_api_rejects_non_loopback_clients(
     assert response.json()["error"]["code"] == "local_access_only"
 
 
+def test_local_only_api_accepts_loopback_forwarded_by_explicit_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SCOUTX_API_LOCAL_ONLY", "true")
+    monkeypatch.setenv("SCOUTX_TRUSTED_PROXY_IPS", "172.29.0.10")
+    get_settings.cache_clear()
+    try:
+        response = asyncio.run(
+            _http_request(
+                "GET",
+                "/api/v1/live",
+                client=("172.29.0.10", 41000),
+                headers={"X-Forwarded-For": "127.0.0.1"},
+            )
+        )
+    finally:
+        get_settings.cache_clear()
+    assert response.status_code == 200
+
+
+def test_untrusted_peer_cannot_spoof_loopback_forwarded_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SCOUTX_API_LOCAL_ONLY", "true")
+    monkeypatch.setenv("SCOUTX_TRUSTED_PROXY_IPS", "172.29.0.10")
+    get_settings.cache_clear()
+    try:
+        response = asyncio.run(
+            _http_request(
+                "GET",
+                "/api/v1/live",
+                client=("203.0.113.12", 5000),
+                headers={"X-Forwarded-For": "127.0.0.1"},
+            )
+        )
+    finally:
+        get_settings.cache_clear()
+    assert response.status_code == 403
+
+
 def test_network_api_exposure_cannot_be_enabled_without_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

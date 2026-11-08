@@ -6,8 +6,8 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scoutx}
       POSTGRES_USER: ${POSTGRES_USER:-scoutx}
-      # Loopback-only development service; production must use password auth.
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -26,6 +26,12 @@ services:
       - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "grep -Eq '^[[:space:]]*[0-9]+:[[:space:]]+[^[:space:]]*:18BD[[:space:]]+[^[:space:]]+[[:space:]]+0A([[:space:]]|$)' /proc/net/tcp /proc/net/tcp6"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   redis:
@@ -42,7 +48,151 @@ services:
       retries: 12
     restart: unless-stopped
 
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-scoutx}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scoutx}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-file_content_chunks}
+      QDRANT_TIMEOUT_SECONDS: ${QDRANT_TIMEOUT_SECONDS:-5}
+      REDIS_URL: redis://redis:6379/0
+      SCOUTX_OLLAMA_BASE_URL: http://ollama:11434
+      SCOUTX_OLLAMA_MODEL: ${SCOUTX_OLLAMA_MODEL:-qwen3:8b}
+      SCOUTX_API_LOCAL_ONLY: "true"
+      SCOUTX_TRUSTED_PROXY_IPS: 172.29.0.10
+      SCOUTX_CORS_ORIGINS: http://127.0.0.1:5173,http://localhost:5173
+      SCOUTX_WORKER_CONCURRENCY: ${SCOUTX_WORKER_CONCURRENCY:-2}
+      SCOUTX_EMBEDDING_DEVICE: ${SCOUTX_EMBEDDING_DEVICE:-auto}
+      SCOUTX_EMBEDDING_CPU_THREADS: ${SCOUTX_EMBEDDING_CPU_THREADS:-4}
+      SCOUTX_EMBEDDING_BATCH_SIZE: ${SCOUTX_EMBEDDING_BATCH_SIZE:-32}
+      SCOUTX_RERANKER_ENABLED: ${SCOUTX_RERANKER_ENABLED:-true}
+      SCOUTX_RERANKER_MODEL: ${SCOUTX_RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      SCOUTX_RERANKER_LOCAL_FILES_ONLY: ${SCOUTX_RERANKER_LOCAL_FILES_ONLY:-false}
+      SCOUTX_RERANKER_FALLBACK_ENABLED: ${SCOUTX_RERANKER_FALLBACK_ENABLED:-true}
+      HF_HOME: /home/scoutx/.cache/huggingface
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - model_cache:/home/scoutx/.cache/huggingface
+      - ${SCOUTX_DEMO_ROOT:-./demo/sample-files}:/demo/sample-files:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/live', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-scoutx}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scoutx}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-file_content_chunks}
+      REDIS_URL: redis://redis:6379/0
+      SCOUTX_OLLAMA_BASE_URL: http://ollama:11434
+      SCOUTX_OLLAMA_MODEL: ${SCOUTX_OLLAMA_MODEL:-qwen3:8b}
+      SCOUTX_API_LOCAL_ONLY: "true"
+      SCOUTX_TRUSTED_PROXY_IPS: 172.29.0.10
+      SCOUTX_WORKER_CONCURRENCY: ${SCOUTX_WORKER_CONCURRENCY:-2}
+      SCOUTX_EMBEDDING_DEVICE: ${SCOUTX_EMBEDDING_DEVICE:-auto}
+      SCOUTX_EMBEDDING_CPU_THREADS: ${SCOUTX_EMBEDDING_CPU_THREADS:-4}
+      SCOUTX_EMBEDDING_BATCH_SIZE: ${SCOUTX_EMBEDDING_BATCH_SIZE:-32}
+      SCOUTX_RERANKER_ENABLED: ${SCOUTX_RERANKER_ENABLED:-true}
+      SCOUTX_RERANKER_MODEL: ${SCOUTX_RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      SCOUTX_RERANKER_LOCAL_FILES_ONLY: ${SCOUTX_RERANKER_LOCAL_FILES_ONLY:-false}
+      SCOUTX_RERANKER_FALLBACK_ENABLED: ${SCOUTX_RERANKER_FALLBACK_ENABLED:-true}
+      HF_HOME: /home/scoutx/.cache/huggingface
+    volumes:
+      - model_cache:/home/scoutx/.cache/huggingface
+      - ${SCOUTX_DEMO_ROOT:-./demo/sample-files}:/demo/sample-files:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["uv", "run", "celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO"]
+    restart: unless-stopped
+
+  worker-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-scoutx}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scoutx}
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["uv", "run", "celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel=INFO"]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    environment:
+      VITE_API_BASE_URL: /api/v1
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.29.0.10
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   qdrant_data:
   redis_data:
+  ollama_data:
+  model_cache:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

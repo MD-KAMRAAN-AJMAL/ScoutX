@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     )
     excluded_paths: list[str] = Field(default_factory=list)
     api_local_only: bool = Field(default=True, validation_alias="SCOUTX_API_LOCAL_ONLY")
+    trusted_proxy_ips: str = Field(default="", validation_alias="SCOUTX_TRUSTED_PROXY_IPS")
     cors_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",
         validation_alias="SCOUTX_CORS_ORIGINS",

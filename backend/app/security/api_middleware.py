@@ -32,7 +32,9 @@ class APISafetyMiddleware:
             return
 
         settings = get_settings()
-        if settings.api_local_only and not _is_loopback_client(scope):
+        if settings.api_local_only and not _is_loopback_client(
+            scope, trusted_proxy_ips=settings.trusted_proxy_ips
+        ):
             await JSONResponse(
                 status_code=403,
                 content={
@@ -169,11 +171,38 @@ def _header(scope, key: bytes) -> str | None:
     )
 
 
-def _is_loopback_client(scope) -> bool:
+def _is_loopback_client(scope, *, trusted_proxy_ips: str = "") -> bool:
     client = scope.get("client")
     if not client:
         return False
     try:
-        return ipaddress.ip_address(client[0]).is_loopback
+        immediate_peer = ipaddress.ip_address(client[0])
     except (TypeError, ValueError):
+        return False
+    if immediate_peer.is_loopback:
+        return True
+
+    trusted = set()
+    for value in trusted_proxy_ips.split(","):
+        value = value.strip()
+        if value:
+            try:
+                trusted.add(ipaddress.ip_address(value))
+            except ValueError:
+                continue
+    if immediate_peer not in trusted:
+        return False
+
+    forwarded_for = next(
+        (
+            value.decode("latin1")
+            for name, value in scope.get("headers", [])
+            if name.lower() == b"x-forwarded-for"
+        ),
+        "",
+    )
+    first_address = forwarded_for.split(",", maxsplit=1)[0].strip()
+    try:
+        return ipaddress.ip_address(first_address).is_loopback
+    except ValueError:
         return False
