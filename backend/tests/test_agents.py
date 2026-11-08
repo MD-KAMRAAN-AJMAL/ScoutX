@@ -191,13 +191,16 @@ def test_api_returns_trace_sources_and_conversation_id(monkeypatch):
     assert response.execution_trace[-1] == "record_run"
 
 
-def test_graph_runs_semantic_then_adapts_to_hybrid_and_exposes_trace():
+def test_graph_runs_semantic_then_adapts_to_hybrid_and_exposes_trace(tmp_path):
+    hit_path = tmp_path / "attention.pdf"
+    hit_path.write_text("fixture", encoding="utf-8")
+
     async def exercise():
         hit = {
             "file_id": str(uuid4()),
             "chunk_id": str(uuid4()),
             "file_name": "attention.pdf",
-            "file_path": "/authorized/attention.pdf",
+            "file_path": str(hit_path),
             "content": "FlashAttention IO-aware tiling",
             "modality": "text",
             "extension": ".pdf",
@@ -257,7 +260,12 @@ def test_graph_runs_semantic_then_adapts_to_hybrid_and_exposes_trace():
     asyncio.run(exercise())
 
 
-def test_graph_applies_metadata_prefilter_to_parallel_content_results():
+def test_graph_applies_metadata_prefilter_to_parallel_content_results(tmp_path):
+    eligible_path = tmp_path / "flashattention.pdf"
+    unrelated_path = tmp_path / "other.pdf"
+    eligible_path.write_text("fixture", encoding="utf-8")
+    unrelated_path.write_text("fixture", encoding="utf-8")
+
     async def exercise():
         eligible = str(uuid4())
         unrelated = str(uuid4())
@@ -266,7 +274,7 @@ def test_graph_applies_metadata_prefilter_to_parallel_content_results():
             "file_id": eligible,
             "chunk_id": str(uuid4()),
             "file_name": "flashattention.pdf",
-            "file_path": "/authorized/flashattention.pdf",
+            "file_path": str(eligible_path),
             "content": "",
             "modality": "text",
             "extension": ".pdf",
@@ -286,6 +294,7 @@ def test_graph_applies_metadata_prefilter_to_parallel_content_results():
                 "file_id": unrelated,
                 "chunk_id": str(uuid4()),
                 "file_name": "other.pdf",
+                "file_path": str(unrelated_path),
                 "content": "FlashAttention mention in another file",
                 "relevance_score": 0.8,
                 "retrieval_method": "semantic",
