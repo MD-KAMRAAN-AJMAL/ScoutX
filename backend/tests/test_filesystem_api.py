@@ -77,7 +77,9 @@ class FakeRootRepository:
         return root
 
     def get(self, user_id: uuid.UUID, root_id: uuid.UUID) -> Any | None:
-        return next((root for root in self.roots if root.id == root_id and root.user_id == user_id), None)
+        return next(
+            (root for root in self.roots if root.id == root_id and root.user_id == user_id), None
+        )
 
     def list_for_user(self, user_id: uuid.UUID, *, enabled_only: bool = False) -> list[Any]:
         items = [root for root in self.roots if root.user_id == user_id]
@@ -87,7 +89,7 @@ class FakeRootRepository:
 
 
 class FakeIndexJobRepository:
-    jobs: list[Any] = []
+    jobs: ClassVar[list[Any]] = []
 
     def __init__(self, _: FakeSession) -> None:
         pass
@@ -120,9 +122,10 @@ def api_dependencies(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 async def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
-    async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
         return await client.request(method, path, **kwargs)
 
 
@@ -247,7 +250,7 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
 
 
 def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> None:
-    now = datetime(2026, 11, 8, 9, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 8, 9, tzinfo=UTC)
     FakeRootRepository.roots = [
         SimpleNamespace(id=ROOT_ID, user_id=USER_ID, is_enabled=True, last_reconciled_at=None)
     ]

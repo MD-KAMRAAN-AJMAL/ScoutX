@@ -2540,7 +2540,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
     { name = "python-magic", specifier = ">=0.4.27,<0.5" },
-    { name = "qdrant-client", specifier = ">=1.12,<2" },
+    { name = "qdrant-client", specifier = ">=1.14,<2" },
     { name = "redis", specifier = ">=5,<7" },
     { name = "sentence-transformers", marker = "extra == 'embedding'", specifier = ">=6.2,<7" },
     { name = "sqlalchemy", specifier = ">=2.0.40,<2.1" },
