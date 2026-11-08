@@ -7,6 +7,7 @@ from app.embeddings.qwen_embedding import EMBEDDING_DIMENSIONS
 COLLECTION_NAME = "file_content_chunks"
 DENSE_VECTOR_NAME = "dense"
 BM25_TEXT_FIELD = "content"
+BM25_SPARSE_VECTOR_NAME = "bm25"
 
 PAYLOAD_INDEXES = {
     "file_id": "keyword",
@@ -46,6 +47,9 @@ def ensure_collection(client, collection_name: str = COLLECTION_NAME) -> None:
                     distance=models.Distance.COSINE,
                 )
             },
+            sparse_vectors_config={
+                BM25_SPARSE_VECTOR_NAME: models.SparseVectorParams(modifier=models.Modifier.IDF)
+            },
         )
     else:
         info = client.get_collection(collection_name)
@@ -55,6 +59,14 @@ def ensure_collection(client, collection_name: str = COLLECTION_NAME) -> None:
             raise RuntimeError(
                 f"Qdrant collection {collection_name!r} must have named vector "
                 f"{DENSE_VECTOR_NAME!r} with {EMBEDDING_DIMENSIONS} dimensions"
+            )
+        sparse_vectors = info.config.params.sparse_vectors or {}
+        if BM25_SPARSE_VECTOR_NAME not in sparse_vectors:
+            client.update_collection(
+                collection_name=collection_name,
+                sparse_vectors_config={
+                    BM25_SPARSE_VECTOR_NAME: models.SparseVectorParams(modifier=models.Modifier.IDF)
+                },
             )
 
     client.create_payload_index(
