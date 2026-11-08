@@ -40,7 +40,9 @@ class FakeResult:
 class FakeSession:
     """Small SQLAlchemy-session stand-in for scanner and event-handler tests."""
 
-    def __init__(self, roots: list[IndexRoot] | None = None, files: list[File] | None = None) -> None:
+    def __init__(
+        self, roots: list[IndexRoot] | None = None, files: list[File] | None = None
+    ) -> None:
         self.roots = roots or []
         self.files = files or []
         self.added: list[Any] = []
@@ -324,7 +326,9 @@ def test_scan_does_not_follow_symlinks_or_index_excluded_paths(tmp_path: Path) -
     assert [snapshot.filename for snapshot in snapshots] == ["visible.txt"]
 
 
-def test_permission_failure_prevents_root_registration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_permission_failure_prevents_root_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.security import permissions as permission_module
 
     monkeypatch.setattr(permission_module, "_access", lambda *_: False)
@@ -342,7 +346,9 @@ def test_watchdog_debounces_duplicate_events_and_reports_move_delete(tmp_path: P
     ready = threading.Event()
 
     class Publisher:
-        def discover_file(self, user_id: uuid.UUID, root_id: uuid.UUID, path: str, *, old_path: str | None = None) -> None:
+        def discover_file(
+            self, user_id: uuid.UUID, root_id: uuid.UUID, path: str, *, old_path: str | None = None
+        ) -> None:
             calls.append(("discover", path, old_path))
             ready.set()
 
@@ -444,7 +450,8 @@ def test_delete_task_marks_file_deleted_idempotently(
         def __init__(self) -> None:
             self.deleted_file_ids: list[uuid.UUID] = []
 
-        def delete_file_points(self, file_id: uuid.UUID) -> None:
+        def delete_file_points(self, owner_id: uuid.UUID, file_id: uuid.UUID) -> None:
+            assert owner_id == user_id
             self.deleted_file_ids.append(file_id)
 
     vector_store = FakeVectorStore()
