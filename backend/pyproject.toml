@@ -27,11 +27,16 @@ extraction = [
     "tika>=3.1,<4",
     "tree-sitter-language-pack>=1.24,<2",
 ]
+embedding = [
+    "sentence-transformers>=6.2,<7",
+    "transformers>=4.51,<6",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3,<9",
     "pytest-cov>=6,<8",
+    "ruff>=0.17.4",
 ]
 
 [tool.uv]
@@ -44,6 +49,14 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.Path",
+    "fastapi.Query",
+]
 
 [build-system]
 requires = ["hatchling"]
