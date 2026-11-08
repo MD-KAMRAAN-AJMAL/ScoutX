@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -11,8 +12,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from redis import Redis
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api import feedback, files, indexing, roots, search
+from app.config import get_settings
+from app.database.engine import engine
+from app.vectorstore.qdrant_client import QdrantStore
 
 logger = logging.getLogger(__name__)
 API_PREFIX = "/api/v1"
@@ -84,6 +92,21 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
     )
 
 
+@app.exception_handler(SQLAlchemyError)
+async def database_exception_handler(_: Request, exc: SQLAlchemyError) -> JSONResponse:
+    logger.exception("Database request failed", exc_info=exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "database_unavailable",
+                "message": "The database is temporarily unavailable. Please retry.",
+                "details": None,
+            }
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def unexpected_exception_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled API exception")
@@ -99,13 +122,79 @@ async def unexpected_exception_handler(_: Request, exc: Exception) -> JSONRespon
     )
 
 
-@app.get(f"{API_PREFIX}/health", tags=["health"])
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "scoutx-api"}
+class HealthResponse(BaseModel):
+    status: str
+    service: str
+    dependencies: dict[str, str]
+
+
+def _check_postgres() -> str:
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    return "available"
+
+
+def _check_qdrant() -> str:
+    store = QdrantStore()
+    try:
+        store.client.get_collections()
+        return "available"
+    finally:
+        close = getattr(store.client, "close", None)
+        if close:
+            close()
+
+
+def _check_redis() -> str:
+    client = Redis.from_url(str(get_settings().redis_url), socket_connect_timeout=2)
+    try:
+        client.ping()
+        return "available"
+    finally:
+        client.close()
+
+
+def _check_ollama() -> str:
+    import httpx
+
+    response = httpx.get(f"{str(get_settings().ollama_base_url).rstrip('/')}/api/tags", timeout=2)
+    response.raise_for_status()
+    return "available"
+
+
+def _probe(check) -> str:
+    try:
+        return check()
+    except Exception:
+        logger.info("A health dependency check failed", exc_info=True)
+        return "unavailable"
+
+
+@app.get(f"{API_PREFIX}/health", tags=["health"], response_model=HealthResponse)
+async def health() -> HealthResponse:
+    checks = await asyncio.gather(
+        *(
+            asyncio.to_thread(_probe, check)
+            for check in (_check_postgres, _check_qdrant, _check_redis, _check_ollama)
+        )
+    )
+    dependencies = dict(zip(("postgres", "qdrant", "redis", "ollama"), checks, strict=True))
+    return HealthResponse(
+        status="ok" if all(value == "available" for value in dependencies.values()) else "degraded",
+        service="scoutx-api",
+        dependencies=dependencies,
+    )
 
 
 app.include_router(search.router, prefix=API_PREFIX)
 app.include_router(files.router, prefix=API_PREFIX)
 app.include_router(roots.router, prefix=API_PREFIX)
 app.include_router(indexing.router, prefix=API_PREFIX)
+app.add_api_route(
+    f"{API_PREFIX}/indexing/status",
+    indexing.indexing_status,
+    methods=["GET"],
+    response_model=indexing.IndexStatusResponse,
+    tags=["indexing"],
+)
 app.include_router(feedback.router, prefix=API_PREFIX)

@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -13,7 +14,7 @@ from app.agents.supervisor import run_supervisor
 from app.api.common import APIModel, ErrorResponse, get_local_user_id
 from app.database.engine import get_db
 from app.database.models import AgentRun
-from app.database.repositories import AgentRunRepository
+from app.database.repositories import AgentRunRepository, FileRepository
 from app.reranking.schemas import AnswerCitation, FileRecommendation
 from app.retrieval.common import SearchCandidate
 
@@ -27,6 +28,10 @@ class SearchRequest(APIModel):
     mode: Literal["auto", "keyword", "semantic", "hybrid"] = "auto"
     conversation_id: UUID | None = None
     generate_answer: bool = True
+    extensions: list[str] = Field(default_factory=list, max_length=20)
+    root_id: UUID | None = None
+    modified_after: datetime | None = None
+    modified_before: datetime | None = None
 
     @field_validator("query")
     @classmethod
@@ -34,6 +39,22 @@ class SearchRequest(APIModel):
         value = value.strip()
         if not value:
             raise ValueError("query must not be blank")
+        return value
+
+    @field_validator("extensions")
+    @classmethod
+    def normalize_extensions(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip().lower() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("file extensions must not be blank")
+        return sorted({value if value.startswith(".") else f".{value}" for value in normalized})
+
+    @field_validator("modified_before")
+    @classmethod
+    def validate_date_range(cls, value: datetime | None, info) -> datetime | None:
+        modified_after = info.data.get("modified_after")
+        if value is not None and modified_after is not None and value < modified_after:
+            raise ValueError("modified_before must be at or after modified_after")
         return value
 
 
@@ -52,6 +73,7 @@ class SearchResult(APIModel):
 
 class SearchResponse(APIModel):
     query: str
+    response_mode: Literal["retrieval_only", "answer"] = "answer"
     results: list[SearchResult]
     answer: str | None = None
     run_id: UUID
@@ -87,6 +109,12 @@ async def search_files(
             mode=request.mode,
             conversation_id=conversation_id,
             generate_answer=request.generate_answer,
+            search_filters={
+                "extensions": request.extensions,
+                "root_id": request.root_id,
+                "modified_after": request.modified_after,
+                "modified_before": request.modified_before,
+            },
         )
     except Exception as exc:
         logger.exception("Search supervisor failed for run %s", run.id)
@@ -106,14 +134,64 @@ async def search_files(
         ) from exc
 
     candidates = [SearchCandidate.model_validate(value) for value in state.get("results", [])]
+    file_ids = {candidate.file_id for candidate in candidates}
+    file_ids.update(
+        UUID(str(item["file_id"]))
+        for item in state.get("files", [])
+        if isinstance(item, dict) and item.get("file_id")
+    )
+    file_ids.update(
+        UUID(str(item["file_id"]))
+        for item in state.get("citations", [])
+        if isinstance(item, dict) and item.get("file_id")
+    )
+    display_paths: dict[UUID, str] = {}
+    if file_ids:
+        try:
+            for source in FileRepository(session).get_source_records(user_id, list(file_ids)):
+                try:
+                    display_paths[source.file.id] = (
+                        Path(source.file.canonical_path)
+                        .relative_to(Path(source.root.canonical_path))
+                        .as_posix()
+                    )
+                except ValueError:
+                    display_paths[source.file.id] = source.file.filename
+        except Exception:
+            logger.exception("Unable to resolve safe display paths for search results")
+
+    def safe_path(file_id: UUID, raw_path: str, name: str) -> str:
+        return display_paths.get(file_id, name or raw_path.rsplit("/", 1)[-1])
+
+    files = []
+    for value in state.get("files", [])[: request.limit]:
+        item = FileRecommendation.model_validate(value)
+        files.append(
+            item.model_copy(
+                update={"file_path": safe_path(UUID(item.file_id), item.file_path, item.file_name)}
+            )
+        )
+    citations = []
+    for value in state.get("citations", []):
+        citation = AnswerCitation.model_validate(value)
+        citations.append(
+            citation.model_copy(
+                update={
+                    "file_path": safe_path(
+                        UUID(citation.file_id), citation.file_path, citation.file_name
+                    )
+                }
+            )
+        )
     return SearchResponse(
         query=request.query,
+        response_mode="answer" if request.generate_answer else "retrieval_only",
         results=[
             SearchResult(
                 file_id=str(x.file_id),
                 chunk_id=str(x.chunk_id) if x.chunk_id else None,
                 name=x.file_name,
-                path=x.file_path,
+                path=safe_path(x.file_id, x.file_path, x.file_name),
                 score=x.relevance_score,
                 excerpt=x.content[:600],
                 source_reference=_source_reference(x),
@@ -133,8 +211,8 @@ async def search_files(
         retry_count=state.get("retry_count", 0),
         execution_trace=state.get("execution_trace", []),
         warnings=state.get("errors", []),
-        files=state.get("files", []),
-        citations=state.get("citations", []),
+        files=files,
+        citations=citations,
         reranking_status=state.get("reranking_status", "unknown"),
         generation_status=state.get("generation_status", "unknown"),
         latency_ms=state.get("latency_ms", {}),

@@ -16,7 +16,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.evaluator import evaluate_candidates
@@ -92,6 +92,7 @@ def build_agent_graph(
     reranker: Callable[..., Any] | None = None,
     answer_generator: Callable[..., Any] | None = None,
     generate_answer: bool = True,
+    search_filters: dict[str, Any] | None = None,
 ):
     """Build a graph with a fixed user identity and a closed retrieval-tool allowlist."""
     tools = retrieval_tools or make_retrieval_tools(user_id, session_factory)
@@ -100,6 +101,7 @@ def build_agent_graph(
     context_loader = context_loader or load_user_context
     reranker = reranker or rerank_candidates
     answer_generator = answer_generator or generate_grounded_answer
+    search_filters = search_filters or {}
 
     async def understand_node(state: AgentState):
         parsed = await understand_query(state["original_query"], llm)
@@ -181,6 +183,39 @@ def build_agent_graph(
             if len(nonempty) > 1
             else deduplicate(nonempty[0] if nonempty else [])
         )
+        if search_filters:
+            allowed_extensions = search_filters.get("extensions") or []
+            merged = [
+                item
+                for item in merged
+                if not allowed_extensions or (item.extension or "").lower() in allowed_extensions
+            ]
+            if any(
+                search_filters.get(key) is not None
+                for key in ("root_id", "modified_after", "modified_before")
+            ):
+
+                def scoped_file_ids():
+                    statement = select(File.id).where(File.user_id == user_id)
+                    if search_filters.get("root_id") is not None:
+                        statement = statement.where(File.root_id == search_filters["root_id"])
+                    if search_filters.get("modified_after") is not None:
+                        statement = statement.where(
+                            File.modified_at >= search_filters["modified_after"]
+                        )
+                    if search_filters.get("modified_before") is not None:
+                        statement = statement.where(
+                            File.modified_at <= search_filters["modified_before"]
+                        )
+                    if allowed_extensions:
+                        statement = statement.where(
+                            func.lower(File.extension).in_(allowed_extensions)
+                        )
+                    with session_factory() as session:
+                        return set(session.scalars(statement).all())
+
+                permitted_files = await asyncio.to_thread(scoped_file_ids)
+                merged = [item for item in merged if item.file_id in permitted_files]
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         logger.info(
             "Retrieval completed",

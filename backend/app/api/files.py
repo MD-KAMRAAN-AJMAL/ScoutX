@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Path as APIPath
 from pydantic import Field
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.api.common import APIModel, ErrorResponse, get_local_user_id
 from app.database.engine import get_db
-from app.database.models import File
+from app.database.models import DocumentChunk, File, IndexRoot
 from app.database.repositories import FileRepository, IndexRootRepository
+from app.security.permissions import FilesystemPermissionError, require_readable_file
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -42,6 +45,28 @@ class FileRecord(APIModel):
     parser_status: str | None = None
     extraction_warnings: list[Any] = Field(default_factory=list)
     extraction_error: str | None = None
+    extension: str | None = None
+    version: int = 1
+    last_indexed_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class FileSnippet(APIModel):
+    chunk_id: uuid.UUID
+    snippet: str
+    modality: str
+    content_version: int
+    section_title: str | None = None
+    page_number: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    start_time_ms: int | None = None
+    end_time_ms: int | None = None
+
+
+class FileDetailResponse(APIModel):
+    file: FileRecord
+    snippets: list[FileSnippet] = Field(default_factory=list)
 
 
 class FileListResponse(APIModel):
@@ -96,20 +121,55 @@ def _extraction_warnings(extra_metadata: dict[str, Any]) -> list[Any]:
     return warnings if isinstance(warnings, list) else []
 
 
-def _file_response(file: File) -> FileRecord:
+def _sanitize_metadata_paths(value: Any, file: File, root: IndexRoot | None) -> Any:
+    if isinstance(value, str):
+        safe_file_path = _display_path(file, root)
+        result = value.replace(file.canonical_path, safe_file_path)
+        root_path = getattr(root or getattr(file, "root", None), "canonical_path", None)
+        if isinstance(root_path, str):
+            root_label = getattr(root, "display_name", None) or Path(root_path).name
+            result = result.replace(root_path, root_label)
+        return result
+    if isinstance(value, list):
+        return [_sanitize_metadata_paths(item, file, root) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_metadata_paths(item, file, root) for key, item in value.items()}
+    return value
+
+
+def _display_path(file: File, root: IndexRoot | None = None) -> str:
+    canonical = Path(file.canonical_path)
+    root_path = getattr(root or getattr(file, "root", None), "canonical_path", None)
+    if isinstance(root_path, str):
+        try:
+            relative = canonical.relative_to(Path(root_path))
+            if not relative.is_absolute() and ".." not in relative.parts:
+                return relative.as_posix()
+        except ValueError:
+            pass
+    return canonical.name
+
+
+def _file_response(file: File, root: IndexRoot | None = None) -> FileRecord:
     metadata = file.extra_metadata if isinstance(file.extra_metadata, dict) else {}
     return FileRecord(
         id=file.id,
         root_id=file.root_id,
         name=file.filename,
-        path=file.canonical_path,
+        path=_display_path(file, root),
         mime_type=file.mime_type,
         size_bytes=file.size_bytes,
         modified_at=file.modified_at,
         indexing_status=normalize_file_status(file.indexing_status, metadata),
-        parser_status=metadata.get("parser_status") if isinstance(metadata.get("parser_status"), str) else None,
-        extraction_warnings=_extraction_warnings(metadata),
-        extraction_error=_extraction_error(metadata),
+        parser_status=metadata.get("parser_status")
+        if isinstance(metadata.get("parser_status"), str)
+        else None,
+        extraction_warnings=_sanitize_metadata_paths(_extraction_warnings(metadata), file, root),
+        extraction_error=_sanitize_metadata_paths(_extraction_error(metadata), file, root),
+        extension=getattr(file, "extension", None),
+        version=getattr(file, "version", 1),
+        last_indexed_at=getattr(file, "last_indexed_at", None),
+        created_at=getattr(file, "created_at", None),
     )
 
 
@@ -127,11 +187,26 @@ def _file_conditions(user_id: uuid.UUID, root_id: uuid.UUID | None) -> list[Colu
 )
 def list_files(
     root_id: uuid.UUID | None = None,
+    filename_contains: str | None = Query(default=None, min_length=1, max_length=255),
+    extension: list[str] | None = Query(default=None, max_length=32),
+    indexing_status: FileStatus | None = None,
+    modified_after: datetime | None = None,
+    modified_before: datetime | None = None,
+    sort_by: Literal["name", "modified_at", "size_bytes", "last_indexed_at"] = "name",
+    sort_order: Literal["asc", "desc"] = "asc",
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_local_user_id),
 ) -> FileListResponse:
+    if modified_after and modified_before and modified_after > modified_before:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_date_range",
+                "message": "modified_after must not be later than modified_before.",
+            },
+        )
     if root_id is not None and IndexRootRepository(session).get(user_id, root_id) is None:
         raise HTTPException(
             status_code=404,
@@ -143,22 +218,124 @@ def list_files(
         )
 
     conditions = _file_conditions(user_id, root_id)
+    if filename_contains:
+        conditions.append(File.filename.ilike(f"%{filename_contains.strip()}%"))
+    if modified_after:
+        conditions.append(File.modified_at >= modified_after)
+    if modified_before:
+        conditions.append(File.modified_at <= modified_before)
+    normalized_extensions = [item.strip().lower() for item in extension or []]
+    normalized_extensions = [
+        item if item.startswith(".") else f".{item}" for item in normalized_extensions
+    ]
+    if normalized_extensions:
+        conditions.append(func.lower(File.extension).in_(normalized_extensions))
+    if indexing_status:
+        if indexing_status == "pending":
+            conditions.append(File.indexing_status.in_(("pending", "queued")))
+        elif indexing_status == "unsupported":
+            conditions.append(File.indexing_status == "excluded")
+        elif indexing_status == "partial":
+            conditions.append(
+                (File.indexing_status == "indexed")
+                & or_(
+                    File.extra_metadata["parser_status"].astext == "partial",
+                    File.extra_metadata["extraction_status"].astext == "partial",
+                    File.extra_metadata["partial"].astext == "true",
+                )
+            )
+        else:
+            conditions.append(File.indexing_status == indexing_status)
     total = session.scalar(select(func.count(File.id)).where(*conditions)) or 0
-    if root_id is not None:
-        records = FileRepository(session).list_for_root(
-            user_id, root_id, limit=limit, offset=offset
-        )
-    else:
-        records = session.scalars(
-            select(File)
-            .where(*conditions)
-            .order_by(File.canonical_path, File.id)
-            .offset(offset)
-            .limit(limit)
-        ).all()
+    sort_column = {
+        "name": File.filename,
+        "modified_at": File.modified_at,
+        "size_bytes": File.size_bytes,
+        "last_indexed_at": File.last_indexed_at,
+    }[sort_by]
+    order = (
+        sort_column.desc().nullslast() if sort_order == "desc" else sort_column.asc().nullslast()
+    )
+    records = session.scalars(
+        select(File)
+        .options(joinedload(File.root))
+        .where(*conditions)
+        .order_by(order, File.id)
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    readable_records = []
+    for file in records:
+        try:
+            require_readable_file(file.canonical_path)
+        except OSError:
+            continue
+        readable_records.append(file)
     return FileListResponse(
-        items=[_file_response(file) for file in records],
+        items=[_file_response(file) for file in readable_records],
         limit=limit,
         offset=offset,
         total=total,
+    )
+
+
+@router.get(
+    "/{file_id}",
+    response_model=FileDetailResponse,
+    responses={
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+def file_detail(
+    file_id: uuid.UUID = APIPath(),
+    session: Session = Depends(get_db),
+    user_id: uuid.UUID = Depends(get_local_user_id),
+) -> FileDetailResponse:
+    file = FileRepository(session).get(user_id, file_id)
+    if file is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "file_not_found", "message": "The file was not found."},
+        )
+    try:
+        require_readable_file(file.canonical_path)
+    except FilesystemPermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "file_inaccessible",
+                "message": "ScoutX cannot currently read this file.",
+            },
+        ) from exc
+
+    chunks = session.scalars(
+        select(DocumentChunk)
+        .where(
+            DocumentChunk.file_id == file.id,
+            DocumentChunk.content_version == file.version,
+            file.indexing_status == "indexed",
+        )
+        .order_by(DocumentChunk.chunk_index)
+        .limit(30)
+    ).all()
+    root = getattr(file, "root", None)
+    return FileDetailResponse(
+        file=_file_response(file, root),
+        snippets=[
+            FileSnippet(
+                chunk_id=chunk.id,
+                snippet=chunk.content[:1200],
+                modality=chunk.modality,
+                content_version=chunk.content_version,
+                section_title=chunk.section_title,
+                page_number=chunk.page_number,
+                line_start=chunk.line_start,
+                line_end=chunk.line_end,
+                start_time_ms=chunk.start_time_ms,
+                end_time_ms=chunk.end_time_ms,
+            )
+            for chunk in chunks
+        ],
     )

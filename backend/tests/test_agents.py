@@ -120,6 +120,12 @@ def test_search_request_rejects_blank_query():
         SearchRequest(query="   ")
 
 
+def test_search_request_normalizes_supported_filters():
+    request = SearchRequest(query="  invoice ", extensions=[" PDF ", "py"])
+    assert request.query == "invoice"
+    assert request.extensions == [".pdf", ".py"]
+
+
 def test_simple_filename_fast_path_does_not_call_llm():
     class UnexpectedModel:
         def with_structured_output(self, *_args, **_kwargs):
@@ -204,8 +210,38 @@ def test_api_returns_trace_sources_and_conversation_id(monkeypatch):
         )
     )
     assert response.results[0].source_reference == "page 3"
+    assert response.results[0].path == "paper.pdf"
+    assert response.response_mode == "answer"
     assert response.tools_invoked == ["semantic"]
     assert response.execution_trace[-1] == "record_run"
+
+
+def test_search_api_returns_safe_503_for_supervisor_failure(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.rows = {}
+
+        def add(self, row):
+            row.id = uuid4()
+            self.rows[row.id] = row
+
+        def flush(self):
+            pass
+
+        def commit(self):
+            pass
+
+        def get(self, _model, run_id):
+            return self.rows.get(run_id)
+
+    async def fail(**_kwargs):
+        raise RuntimeError("private stack detail")
+
+    monkeypatch.setattr("app.api.search.run_supervisor", fail)
+    with pytest.raises(Exception) as error:
+        asyncio.run(search_files(SearchRequest(query="Find a file"), USER, FakeSession()))
+    assert getattr(error.value, "status_code", None) == 503
+    assert "private stack detail" not in str(error.value.detail)
 
 
 def test_graph_runs_semantic_then_adapts_to_hybrid_and_exposes_trace(tmp_path):
@@ -374,6 +410,69 @@ def test_graph_applies_metadata_prefilter_to_parallel_content_results(tmp_path):
         assert final is not None
         assert [result["file_id"] for result in final["results"]] == [eligible]
         assert final["candidate_counts"] == {"metadata": 1, "semantic": 2}
+
+    asyncio.run(exercise())
+
+
+def test_graph_applies_search_extension_filter_after_retrieval(tmp_path):
+    pdf_path = tmp_path / "report.pdf"
+    txt_path = tmp_path / "report.txt"
+    pdf_path.write_text("pdf", encoding="utf-8")
+    txt_path.write_text("txt", encoding="utf-8")
+
+    async def exercise():
+        hits = [
+            {
+                "file_id": str(uuid4()),
+                "chunk_id": str(uuid4()),
+                "file_name": path.name,
+                "file_path": str(path),
+                "content": "monthly forecast detail",
+                "modality": "text",
+                "extension": extension,
+                "relevance_score": 0.8,
+                "retrieval_method": "semantic",
+            }
+            for path, extension in ((pdf_path, ".pdf"), (txt_path, ".txt"))
+        ]
+
+        @tool
+        def semantic(query: str, extensions: list[str] | None = None) -> str:
+            """Search semantic file content."""
+            return json.dumps(hits)
+
+        run_id = uuid4()
+        graph = build_agent_graph(
+            user_id=USER,
+            run_id=run_id,
+            retrieval_tools=[semantic],
+            checkpointer=MemorySaver(),
+            session_factory=lambda: nullcontext(object()),
+            context_loader=lambda _session, _user: {},
+            run_recorder=lambda _state: None,
+            reranker=_identity_reranker,
+            generate_answer=False,
+            search_filters={"extensions": [".pdf"]},
+        )
+        final = await graph.ainvoke(
+            {
+                "original_query": "Find document about monthly forecast",
+                "query": "Find document about monthly forecast",
+                "request_mode": "auto",
+                "run_id": str(run_id),
+                "retry_count": 0,
+                "max_retries": 0,
+                "tools_invoked": [],
+                "candidate_counts": {},
+                "results": [],
+                "errors": [],
+                "execution_trace": [],
+                "generate_answer": False,
+            },
+            {"configurable": {"thread_id": str(uuid4())}},
+        )
+        assert len(final["results"]) == 1
+        assert final["results"][0]["extension"] == ".pdf"
 
     asyncio.run(exercise())
 

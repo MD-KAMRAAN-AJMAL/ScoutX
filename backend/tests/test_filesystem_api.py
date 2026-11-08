@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 
+from app.api import feedback as feedback_api
 from app.api import files as files_api
 from app.api import indexing as indexing_api
 from app.api import roots as roots_api
@@ -109,6 +110,7 @@ def api_dependencies(monkeypatch: pytest.MonkeyPatch) -> Any:
     app.dependency_overrides[get_local_user_id] = lambda: USER_ID
     monkeypatch.setattr(roots_api, "IndexRootRepository", FakeRootRepository)
     monkeypatch.setattr(files_api, "IndexRootRepository", FakeRootRepository)
+    monkeypatch.setattr(files_api, "require_readable_file", lambda path, **_kwargs: Path(path))
     monkeypatch.setattr(indexing_api, "IndexRootRepository", FakeRootRepository)
     monkeypatch.setattr(indexing_api, "IndexJobRepository", FakeIndexJobRepository)
     FakeRootRepository.roots = []
@@ -137,7 +139,8 @@ def test_register_root_validates_and_canonicalizes_directory(tmp_path: Path) -> 
     response = call("POST", "/api/v1/roots", json={"path": str(tmp_path), "display_name": "Work"})
 
     assert response.status_code == 201
-    assert response.json()["path"] == str(tmp_path.resolve())
+    assert response.json()["path"] == "Work"
+    assert str(tmp_path) not in response.text
     assert response.json()["status"] == "enabled"
     assert FakeRootRepository.requested[0].canonical_path == str(tmp_path.resolve())
 
@@ -247,6 +250,44 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
     assert item["parser_status"] == "partial"
     assert item["extraction_warnings"] == ["Page 2 contains no extractable text"]
     assert item["extraction_error"] == "Page 2 unreadable"
+    assert item["path"] == "notes.pdf"
+    assert not Path(item["path"]).is_absolute()
+
+
+def test_file_listing_supports_server_side_filters_and_sort_validation(
+    api_dependencies: FakeSession,
+) -> None:
+    api_dependencies.file_rows = [
+        SimpleNamespace(
+            id=FILE_ID,
+            root_id=ROOT_ID,
+            filename="report.pdf",
+            canonical_path="/authorized/report.pdf",
+            mime_type="application/pdf",
+            extension=".pdf",
+            size_bytes=512,
+            modified_at=None,
+            indexing_status="indexed",
+            version=1,
+            last_indexed_at=None,
+            created_at=None,
+            extra_metadata={},
+        )
+    ]
+    response = call(
+        "GET",
+        "/api/v1/files?filename_contains=report&extension=pdf&sort_by=size_bytes&sort_order=desc",
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["extension"] == ".pdf"
+    assert response.json()["items"][0]["path"] == "report.pdf"
+
+    invalid = call(
+        "GET",
+        "/api/v1/files?modified_after=2026-11-08T00:00:00Z&modified_before=2026-11-07T00:00:00Z",
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_date_range"
 
 
 def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> None:
@@ -313,6 +354,10 @@ def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> N
     assert response.json()["recent_jobs"][0]["progress_percent"] == 42
     assert response.json()["recent_jobs"][1]["error_message"] == "Parser rejected this file"
 
+    alias = call("GET", "/api/v1/indexing/status")
+    assert alias.status_code == 200
+    assert alias.json()["files_discovered"] == response.json()["files_discovered"]
+
 
 def test_reconcile_requires_dispatcher_and_queues_when_configured() -> None:
     FakeRootRepository.roots = [
@@ -350,3 +395,124 @@ def test_reconcile_uses_existing_celery_task_by_default(monkeypatch: pytest.Monk
     assert response.status_code == 202
     assert submitted == [(USER_ID, ROOT_ID)]
     assert response.json()["task_ids"] == ["celery-task-123"]
+
+
+def test_file_detail_is_user_scoped_and_returns_versioned_snippets(
+    api_dependencies: FakeSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root_path = tmp_path / "authorized"
+    root_path.mkdir()
+    actual_file = root_path / "notes.txt"
+    actual_file.write_text("notes", encoding="utf-8")
+    root = SimpleNamespace(canonical_path=str(root_path))
+    file = SimpleNamespace(
+        id=FILE_ID,
+        user_id=USER_ID,
+        root_id=ROOT_ID,
+        root=root,
+        filename="notes.txt",
+        canonical_path=str(actual_file),
+        mime_type="text/plain",
+        extension=".txt",
+        size_bytes=5,
+        modified_at=None,
+        indexing_status="indexed",
+        version=2,
+        last_indexed_at=datetime(2026, 11, 8, tzinfo=UTC),
+        created_at=datetime(2026, 11, 7, tzinfo=UTC),
+        extra_metadata={"parser_status": "success"},
+    )
+    chunk = SimpleNamespace(
+        id=uuid.uuid4(),
+        content="A searchable note.",
+        modality="text",
+        content_version=2,
+        section_title="Summary",
+        page_number=1,
+        line_start=None,
+        line_end=None,
+        start_time_ms=None,
+        end_time_ms=None,
+        chunk_index=0,
+    )
+    monkeypatch.setattr(files_api.FileRepository, "get", lambda *_args: file)
+    monkeypatch.setattr(files_api, "require_readable_file", lambda *_args: actual_file)
+    api_dependencies.file_rows = [chunk]
+
+    response = call("GET", f"/api/v1/files/{FILE_ID}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file"]["path"] == "notes.txt"
+    assert body["file"]["version"] == 2
+    assert body["snippets"][0]["snippet"] == "A searchable note."
+    assert body["snippets"][0]["section_title"] == "Summary"
+    assert str(tmp_path) not in response.text
+
+
+def test_file_detail_returns_safe_permission_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    file = SimpleNamespace(id=FILE_ID, canonical_path="/private/blocked.txt")
+    monkeypatch.setattr(files_api.FileRepository, "get", lambda *_args: file)
+    monkeypatch.setattr(
+        files_api,
+        "require_readable_file",
+        lambda *_args: (_ for _ in ()).throw(files_api.FilesystemPermissionError("private path")),
+    )
+
+    response = call("GET", f"/api/v1/files/{FILE_ID}")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "file_inaccessible"
+    assert "/private" not in response.text
+
+
+def test_feedback_is_persisted_in_user_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved: list[Any] = []
+    activities: list[Any] = []
+
+    class FakeFeedbackRepository:
+        def __init__(self, _session: FakeSession) -> None:
+            pass
+
+        def create(self, user_id: uuid.UUID, data: Any) -> Any:
+            saved.append((user_id, data))
+            return data
+
+    class FakeActivityRepository:
+        def __init__(self, _session: FakeSession) -> None:
+            pass
+
+        def record(self, user_id: uuid.UUID, event_type: str, **kwargs: Any) -> None:
+            activities.append((user_id, event_type, kwargs))
+
+    monkeypatch.setattr(feedback_api, "RecommendationFeedbackRepository", FakeFeedbackRepository)
+    monkeypatch.setattr(feedback_api, "ActivityRepository", FakeActivityRepository)
+    response = call(
+        "POST",
+        "/api/v1/feedback",
+        json={"file_id": str(FILE_ID), "action": "opened", "query": "budget"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"accepted": True}
+    assert saved[0][0] == USER_ID
+    assert saved[0][1].rating == 3
+    assert activities[0][1] == "opened"
+
+
+def test_health_reports_dependency_degradation_without_sensitive_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main as main_api
+
+    monkeypatch.setattr(main_api, "_check_postgres", lambda: "available")
+    monkeypatch.setattr(main_api, "_check_qdrant", lambda: "unavailable")
+    monkeypatch.setattr(main_api, "_check_redis", lambda: "available")
+    monkeypatch.setattr(main_api, "_check_ollama", lambda: "available")
+
+    response = call("GET", "/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["dependencies"]["qdrant"] == "unavailable"
+    assert "password" not in response.text.lower()

@@ -43,7 +43,7 @@ class RootListResponse(APIModel):
 def _root_response(root: IndexRoot) -> RootRecord:
     return RootRecord(
         id=root.id,
-        path=root.canonical_path,
+        path=root.display_name or FileSystemPath(root.canonical_path).name,
         display_name=root.display_name,
         status="enabled" if root.is_enabled else "disabled",
         last_reconciled_at=root.last_reconciled_at,
