@@ -11,9 +11,12 @@ from sqlalchemy.orm import Session
 from app.database.models import DocumentChunk, File
 from app.embeddings.service import EmbeddingService
 from app.retrieval.common import (
+    CodeSearchInput,
     SearchCandidate,
     active_chunk_condition,
+    authenticated_user_id,
     deduplicate,
+    normalize_backend_errors,
     reciprocal_rank_fusion,
 )
 from app.retrieval.keyword import search_keyword
@@ -48,6 +51,7 @@ _LANGUAGE_ALIASES = {
 }
 
 
+@normalize_backend_errors
 def search_code(
     session: Session,
     user_id: UUID,
@@ -59,14 +63,12 @@ def search_code(
     store: QdrantStore | None = None,
 ) -> list[SearchCandidate]:
     """Search source chunks by exact identifier, BM25 terms and code semantics."""
-    query = query.strip()
-    if not query:
-        return []
-    if limit < 1:
-        raise ValueError("limit must be positive")
+    args = CodeSearchInput.model_validate({"query": query, "limit": limit, "languages": languages})
+    user_id = authenticated_user_id(user_id)
+    query = args.query
     normalized_languages = [
         _LANGUAGE_ALIASES.get(value.strip().lower(), value.strip().lower())
-        for value in (languages or [])
+        for value in (args.languages or [])
     ]
     filters = [
         File.extension.in_(SOURCE_EXTENSIONS),
@@ -94,7 +96,7 @@ def search_code(
         rows = session.execute(
             statement.where(DocumentChunk.content.op("~*")(pattern))
             .order_by(File.canonical_path, DocumentChunk.chunk_index)
-            .limit(limit)
+            .limit(args.limit)
         ).all()
         exact_results = [
             SearchCandidate(
@@ -112,6 +114,7 @@ def search_code(
                 start_time_ms=chunk.start_time_ms,
                 end_time_ms=chunk.end_time_ms,
                 retrieval_method="code_identifier",
+                source_references=list((chunk.chunk_metadata or {}).get("source_references", [])),
             )
             for chunk, file in rows
         ]
@@ -121,7 +124,7 @@ def search_code(
         session,
         user_id,
         query,
-        limit=limit,
+        limit=args.limit,
         extensions=SOURCE_EXTENSIONS,
         modalities=["code"],
         languages=qdrant_langs,
@@ -133,7 +136,7 @@ def search_code(
         session,
         user_id,
         query,
-        limit=limit,
+        limit=args.limit,
         extensions=SOURCE_EXTENSIONS,
         modalities=["code"],
         languages=qdrant_langs,
@@ -141,6 +144,6 @@ def search_code(
         store=store,
     )
     merged = reciprocal_rank_fusion(
-        exact_results, exact_terms, semantic, limit=limit, method="code_rrf"
+        exact_results, exact_terms, semantic, limit=args.limit, method="code_rrf"
     )
     return deduplicate(merged)
