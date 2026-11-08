@@ -221,7 +221,13 @@ def reconcile(
         request.app.state, "reconciliation_dispatcher", _dispatch_celery_reconciliation
     )
     if dispatcher is None:
-        raise HTTPException(status_code=503, detail={"code": "indexing_service_unavailable", "message": "The filesystem indexing worker is not connected yet."})
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "indexing_service_unavailable",
+                "message": "The filesystem indexing worker is not connected yet.",
+            },
+        )
 
     try:
         task_ids = [dispatcher(user_id, root.id) for root in roots]

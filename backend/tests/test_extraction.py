@@ -16,12 +16,26 @@ FILE_ID = uuid.uuid4()
 
 
 def test_normalized_block_requires_identity_and_ranges():
-    block = ExtractedBlock(content="hello", file_id=FILE_ID, content_version=1,
-                           parser_name="test", parser_version="1", line_start=1, line_end=2)
+    block = ExtractedBlock(
+        content="hello",
+        file_id=FILE_ID,
+        content_version=1,
+        parser_name="test",
+        parser_version="1",
+        line_start=1,
+        line_end=2,
+    )
     assert block.content == "hello"
     with pytest.raises(ValueError):
-        ExtractedBlock(content="bad", file_id=FILE_ID, content_version=1,
-                       parser_name="test", parser_version="1", line_start=2, line_end=1)
+        ExtractedBlock(
+            content="bad",
+            file_id=FILE_ID,
+            content_version=1,
+            parser_name="test",
+            parser_version="1",
+            line_start=2,
+            line_end=1,
+        )
 
 
 def test_registry_routes_one_parser_and_reports_unsupported(tmp_path):
@@ -81,7 +95,9 @@ def test_docling_uses_tika_only_after_primary_failure(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "docling", docling)
     monkeypatch.setitem(sys.modules, "docling.document_converter", converter_module)
     tika = types.ModuleType("tika")
-    tika.parser = types.SimpleNamespace(from_file=lambda *_a, **_k: {"content": "fallback text", "metadata": {}})
+    tika.parser = types.SimpleNamespace(
+        from_file=lambda *_a, **_k: {"content": "fallback text", "metadata": {}}
+    )
     monkeypatch.setitem(sys.modules, "tika", tika)
     monkeypatch.setattr("app.ingestion.docling_parser.version", lambda _name: "test-version")
     result = DoclingParser().parse(file, FILE_ID, 1)
@@ -95,9 +111,18 @@ def test_docling_keeps_presentation_slide_number(tmp_path, monkeypatch):
     # test does not download Docling's layout/OCR models.
     file = tmp_path / "deck.pptx"
     with zipfile.ZipFile(file, "w") as package:
-        package.writestr("[Content_Types].xml", "<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'/>")
-        package.writestr("ppt/presentation.xml", "<p:presentation xmlns:p='http://schemas.openxmlformats.org/presentationml/2006/main'/>")
-        package.writestr("ppt/slides/slide1.xml", "<p:sld xmlns:p='http://schemas.openxmlformats.org/presentationml/2006/main'/>")
+        package.writestr(
+            "[Content_Types].xml",
+            "<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'/>",
+        )
+        package.writestr(
+            "ppt/presentation.xml",
+            "<p:presentation xmlns:p='http://schemas.openxmlformats.org/presentationml/2006/main'/>",
+        )
+        package.writestr(
+            "ppt/slides/slide1.xml",
+            "<p:sld xmlns:p='http://schemas.openxmlformats.org/presentationml/2006/main'/>",
+        )
 
     class Provenance:
         page_no = 3
@@ -151,7 +176,13 @@ def test_image_parser_with_real_png_and_fake_ocr(tmp_path, monkeypatch):
 
     class FakeOcr:
         def predict(self, input):
-            return [{"rec_texts": ["Invoice 123"], "rec_scores": [0.98], "dt_polys": [[[1, 2], [3, 2], [3, 4], [1, 4]]]}]
+            return [
+                {
+                    "rec_texts": ["Invoice 123"],
+                    "rec_scores": [0.98],
+                    "dt_polys": [[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                }
+            ]
 
     parser = ImageParser(ocr_factory=FakeOcr)
     monkeypatch.setattr("app.ingestion.image_parser.version", lambda _name: "fake")
@@ -170,7 +201,19 @@ def test_media_transcription_with_real_audio_fixture_and_fake_whisper(tmp_path, 
     from app.ingestion.media_parser import MediaParser
 
     file = tmp_path / "tone.wav"
-    subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(file)], check=True)
+    subprocess.run(
+        [
+            shutil.which("ffmpeg"),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            str(file),
+        ],
+        check=True,
+    )
 
     class Segment:
         start, end, text = 0.1, 0.8, "test speech"

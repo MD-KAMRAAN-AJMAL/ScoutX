@@ -25,9 +25,15 @@ def test_all_initial_relational_models_are_registered() -> None:
 def test_file_chunk_schema_and_fuzzy_filename_index() -> None:
     configure_mappers()
     assert File.__table__.c.id.primary_key
-    assert {"user_id", "root_id", "canonical_path", "device_id", "inode", "content_hash", "version"} <= set(
-        File.__table__.c.keys()
-    )
+    assert {
+        "user_id",
+        "root_id",
+        "canonical_path",
+        "device_id",
+        "inode",
+        "content_hash",
+        "version",
+    } <= set(File.__table__.c.keys())
     assert isinstance(DocumentChunk.__table__.c.content.type, Text)
     assert any(
         index.name == "ix_files_filename_trgm"
