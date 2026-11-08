@@ -22,6 +22,10 @@ WORKDIR /app/backend
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --extra extraction --extra embedding --no-install-project
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./alembic.ini

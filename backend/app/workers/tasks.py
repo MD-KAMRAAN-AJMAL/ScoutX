@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.database.engine import SessionLocal
 from app.database.models import DocumentChunk, File, IndexJob, IndexRoot
 from app.database.repositories import IndexRootRepository
-from app.embeddings.service import EmbeddingService
+from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.ingestion.chunker import DocumentChunker
 from app.ingestion.fingerprints import FileChangedDuringHashing
 from app.ingestion.normalized import ExtractionStatus
@@ -149,7 +149,7 @@ def process_file(self: Task, user_id: str, file_id: str, version: int) -> dict[s
         if (
             job.status == "succeeded"
             and settings.get("active_content_version") == version
-            and settings.get("active_embedding_model") == EmbeddingService().fingerprint
+            and settings.get("active_embedding_model") == get_embedding_service().fingerprint
         ):
             return {"status": "already_indexed", "file_id": file_id, "version": version}
         file.indexing_status = "processing"
@@ -356,7 +356,7 @@ def generate_embeddings(self: Task, user_id: str, file_id: str, version: int) ->
             raise RuntimeError("No PostgreSQL chunks exist for embedding")
         file_snapshot = file
 
-    service = EmbeddingService()
+    service = get_embedding_service()
     store = get_qdrant_store()
     prepared = [(chunk, *prepare_point(chunk, file_snapshot, service)) for chunk in chunks]
     stored = store.existing_fingerprints(owner_id, [point_id for _, point_id, _, _ in prepared])
@@ -396,11 +396,8 @@ def generate_embeddings(self: Task, user_id: str, file_id: str, version: int) ->
             }
             for (chunk, point_id, fingerprint), vector in zip(batch, vectors, strict=True)
         ]
-        upsert_result = upsert_vectors.apply(
-            args=[str(owner_id), str(record_id), version, payloads]
-        )
-        upsert_result.get(propagate=True)
-    cleanup_old_version.delay(str(owner_id), str(record_id), version)
+        _upsert_vectors_impl(str(owner_id), str(record_id), version, payloads)
+    _cleanup_old_version_impl(str(owner_id), str(record_id), version)
     return {
         "status": "vectors_ready",
         "file_id": file_id,
@@ -427,6 +424,16 @@ def upsert_vectors(
     vectors: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Idempotently upsert one bounded vector batch and persist its chunk links."""
+    return _upsert_vectors_impl(user_id, file_id, version, vectors)
+
+
+def _upsert_vectors_impl(
+    user_id: str,
+    file_id: str,
+    version: int,
+    vectors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Run vector persistence inline when embedding already owns a worker slot."""
     owner_id, record_id = uuid.UUID(user_id), uuid.UUID(file_id)
     if not vectors:
         return {"status": "empty", "upserted": 0}
@@ -447,7 +454,7 @@ def upsert_vectors(
             )
         ).all()
         by_id = {chunk.id: chunk for chunk in chunks}
-        service = EmbeddingService()
+        service = get_embedding_service()
         point_payloads = []
         point_records = []
         for item in vectors:
@@ -500,8 +507,13 @@ def upsert_vectors(
 )
 def cleanup_old_version(self: Task, user_id: str, file_id: str, version: int) -> dict[str, Any]:
     """Verify a full replacement, activate it, then remove stale PostgreSQL/Qdrant data."""
+    return _cleanup_old_version_impl(user_id, file_id, version)
+
+
+def _cleanup_old_version_impl(user_id: str, file_id: str, version: int) -> dict[str, Any]:
+    """Finalize a version inline after its vector batch has been verified."""
     owner_id, record_id = uuid.UUID(user_id), uuid.UUID(file_id)
-    service = EmbeddingService()
+    service = get_embedding_service()
     store = get_qdrant_store()
     with SessionLocal() as session:
         file = session.scalar(

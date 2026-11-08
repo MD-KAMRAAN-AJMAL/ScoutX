@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from importlib.metadata import version
+import platform
 from pathlib import Path
+import subprocess
 from uuid import UUID
 
 from app.ingestion.normalized import ExtractedDocument, ExtractionStatus, make_block
@@ -46,7 +48,7 @@ class ImageParser:
                 gray, None, h=8, templateWindowSize=7, searchWindowSize=21
             )
             engine = self._get_engine()
-            lines = self._recognize(engine, preprocessed)
+            lines = self._recognize(engine, preprocessed, path)
             paddle_version = version("paddleocr")
             blocks = []
             for text, score, polygon in lines:
@@ -93,6 +95,11 @@ class ImageParser:
         if self._engine is None:
             if self._ocr_factory is not None:
                 self._engine = self._ocr_factory()
+            elif platform.machine().lower() in {"aarch64", "arm64"}:
+                # PaddlePaddle currently segfaults during OCR inference in our
+                # Linux ARM64 container. Use Tesseract there so a native crash
+                # cannot terminate the indexing worker.
+                self._engine = "tesseract"
             else:
                 from paddleocr import PaddleOCR
 
@@ -101,7 +108,33 @@ class ImageParser:
         return self._engine
 
     @staticmethod
-    def _recognize(engine, image):
+    def _recognize(engine, image, path: Path):
+        if engine == "tesseract":
+            result = subprocess.run(
+                ["tesseract", str(path), "stdout", "tsv", "--psm", "6"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            lines = []
+            for row in result.stdout.splitlines()[1:]:
+                columns = row.split("\t", 11)
+                if len(columns) < 12 or not columns[11].strip():
+                    continue
+                try:
+                    confidence = float(columns[10]) / 100
+                    left, top, width, height = (int(columns[i]) for i in range(6, 10))
+                    polygon = [
+                        [left, top],
+                        [left + width, top],
+                        [left + width, top + height],
+                        [left, top + height],
+                    ]
+                except ValueError:
+                    confidence, polygon = None, None
+                lines.append((columns[11], confidence, polygon))
+            return lines
         if hasattr(engine, "predict"):
             result = engine.predict(input=image)
             normalized = []

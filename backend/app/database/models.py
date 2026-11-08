@@ -136,7 +136,7 @@ class File(TimestampMixin, Base):
     root_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     canonical_path: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str] = mapped_column(String(1024), nullable=False)
-    extension: Mapped[str | None] = mapped_column(String(32))
+    extension: Mapped[str | None] = mapped_column(String(255))
     mime_type: Mapped[str | None] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

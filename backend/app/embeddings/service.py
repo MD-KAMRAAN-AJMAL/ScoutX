@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Iterator
+from functools import lru_cache
 
 from app.config import get_settings
 from app.embeddings.base import EmbeddingProvider
@@ -44,3 +45,9 @@ class EmbeddingService:
         digest.update(b"\0")
         digest.update(text.encode("utf-8"))
         return digest.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def get_embedding_service() -> EmbeddingService:
+    """Reuse the embedding model loaded by this process across tasks."""
+    return EmbeddingService()

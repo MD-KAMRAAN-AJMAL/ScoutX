@@ -19,6 +19,7 @@ temp/
 volumes/
 local-files/
 user-files/
+docker-compose.override.yml
 model-cache/
 hf_cache/
 postgres-data/

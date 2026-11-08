@@ -89,10 +89,12 @@ class Qwen3Embedding(EmbeddingProvider):
             selected_device = self._select_device(torch, self.device)
             if selected_device == "cpu":
                 torch.set_num_threads(self.cpu_threads)
+            model_kwargs = {"torch_dtype": torch.float32} if selected_device == "cpu" else {}
             model = SentenceTransformer(
                 self.model_name,
                 revision=self.model_revision,
                 device=selected_device,
+                model_kwargs=model_kwargs,
             )
             actual_dimensions = model.get_sentence_embedding_dimension()
             if actual_dimensions != self.dimensions:

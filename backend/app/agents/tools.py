@@ -11,7 +11,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.embeddings.service import EmbeddingService
+from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.retrieval.code import SOURCE_EXTENSIONS, search_code
 from app.retrieval.filename import search_exact_filename, search_fuzzy_filename
 from app.retrieval.hybrid import search_hybrid
@@ -63,7 +63,7 @@ def make_retrieval_tools(
     store: QdrantStore | None = None,
 ) -> list[StructuredTool]:
     """Build the fixed seven-tool allowlist with server-controlled user scoping."""
-    embedder = embedding_service or EmbeddingService()
+    embedder = embedding_service or get_embedding_service()
 
     def serialize(items) -> str:
         return json.dumps([item.model_dump(mode="json") for item in items])

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.embeddings.service import EmbeddingService
+from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.retrieval.common import (
     HybridSearchInput,
     SearchCandidate,
@@ -49,7 +49,7 @@ def search_hybrid(
     candidates = args.candidate_limit or min(max(args.limit * 4, 40), 1000)
     if candidates < args.limit:
         raise ValueError("candidate_limit must be at least limit")
-    embedding_service = embedding_service or EmbeddingService()
+    embedding_service = embedding_service or get_embedding_service()
     vectors = embedding_service.embed_queries([args.query])
     if len(vectors) != 1:
         raise RuntimeError("Embedding provider returned an invalid query batch")
