@@ -1,0 +1,7 @@
+{
+  "embedding_model": "Qwen3-Embedding-0.6B",
+  "reranker_model": "Qwen3-Reranker-0.6B",
+  "answer_model": "record-the-model-used-by-the-provider",
+  "provider_mode": "offline-smoke",
+  "live_models_invoked": false
+}

@@ -1,0 +1,664 @@
+{
+  "name": "scoutx-small",
+  "version": "1.0.0",
+  "description": "Synthetic, manually authored judgments for local retrieval and adapter smoke evaluation.",
+  "judgment_policy": "Grades are synthetic-authored ground truth. Unlisted query/file pairs are unjudged; retrieval defaults to counting them as irrelevant, with an exclude option available. This compact corpus is a smoke dataset, not representative of real users.",
+  "documents": [
+    {
+      "logical_file_id": "aurora-design",
+      "filename": "aurora-cache-design.md",
+      "extension": ".md",
+      "mime_type": "text/markdown",
+      "content": "# Aurora Cache Design\nAurora is a local document cache. Each cache entry expires after fifteen minutes. A successful write must invalidate the matching key. The cache uses an LRU eviction policy and a 256 MiB storage budget.",
+      "metadata": {
+        "project": "aurora"
+      }
+    },
+    {
+      "logical_file_id": "aurora-tests",
+      "filename": "test_aurora_cache.py",
+      "extension": ".py",
+      "mime_type": "text/x-python",
+      "language": "python",
+      "content": "class CacheLease:\n    def invalidate_after_write(self, key: str) -> None:\n        \"\"\"Remove the stale cache value after a successful write.\"\"\"\n        self.store.pop(key, None)\n\n# TTL defaults to 900 seconds; eviction is least-recently-used.",
+      "metadata": {
+        "project": "aurora"
+      }
+    },
+    {
+      "logical_file_id": "quasar-ledger",
+      "filename": "quasar-ledger.csv",
+      "extension": ".csv",
+      "mime_type": "text/csv",
+      "content": "service,region,monthly_cost_usd\nquasar,west,120\nquasar,east,95\nnebula,west,210",
+      "metadata": {
+        "sheet": "costs"
+      }
+    },
+    {
+      "logical_file_id": "quasar-runbook",
+      "filename": "quasar-operations.html",
+      "extension": ".html",
+      "mime_type": "text/html",
+      "content": "<h1>Quasar Operations</h1><h2>Failover</h2><p>Promote the east replica when the west region is unavailable. Verify the replicated ledger before routing traffic.</p>",
+      "metadata": {
+        "section": "Failover"
+      }
+    },
+    {
+      "logical_file_id": "nebula-api",
+      "filename": "nebula_api.ts",
+      "extension": ".ts",
+      "mime_type": "text/plain",
+      "language": "typescript",
+      "content": "export function refreshIndex(rootId: string): Promise<void> {\n  // Reconcile stale entries after a successful scan.\n  return enqueueReconciliation(rootId);\n}\n// The retry delay is 30 seconds.",
+      "metadata": {
+        "project": "nebula"
+      }
+    },
+    {
+      "logical_file_id": "orbit-budget",
+      "filename": "orbit-budget.xlsx",
+      "extension": ".xlsx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "content": "Workbook: Orbit Budget\nSheet: Forecast\nHeaders: quarter, planned_usd, actual_usd\nRows: Q1 5000 4800; Q2 5500 5700",
+      "metadata": {
+        "sheet": "Forecast",
+        "range": "A1:C3"
+      }
+    },
+    {
+      "logical_file_id": "vector-notes",
+      "filename": "vector-index-notes.txt",
+      "extension": ".txt",
+      "mime_type": "text/plain",
+      "content": "Vector index notes: dense retrieval uses cosine similarity over normalized embeddings. The collection stores chunk identifiers and source references. A lexical payload index supports BM25-compatible text search.",
+      "metadata": {
+        "topic": "search"
+      }
+    },
+    {
+      "logical_file_id": "meeting-transcript",
+      "filename": "search-review.wav",
+      "extension": ".wav",
+      "mime_type": "audio/wav",
+      "modality": "audio",
+      "content": "Synthetic transcript: The team agreed to measure recall at five for hybrid search and to preserve page references in citations.",
+      "metadata": {
+        "transcript_start_ms": 12000,
+        "transcript_end_ms": 18000
+      }
+    },
+    {
+      "logical_file_id": "diagram-ocr",
+      "filename": "cache-flow.png",
+      "extension": ".png",
+      "mime_type": "image/png",
+      "modality": "image",
+      "content": "Synthetic OCR text: CACHE WRITE -> INVALIDATE KEY -> REFRESH READER",
+      "metadata": {
+        "fixture": "OCR transcription reference; no personal image data"
+      }
+    },
+    {
+      "logical_file_id": "release-recording",
+      "filename": "release-review.mp4",
+      "extension": ".mp4",
+      "mime_type": "video/mp4",
+      "modality": "video",
+      "content": "Synthetic transcript: Release review covered rollback and replica health checks.",
+      "metadata": {
+        "transcript_start_ms": 44000,
+        "transcript_end_ms": 52000
+      }
+    },
+    {
+      "logical_file_id": "systems-c",
+      "filename": "queue.c",
+      "extension": ".c",
+      "mime_type": "text/x-c",
+      "language": "c",
+      "content": "// Bounded queue rejects writes when full.\nint queue_try_push(struct Queue *queue, int value) { return enqueue_if_space(queue, value); }"
+    },
+    {
+      "logical_file_id": "systems-cpp",
+      "filename": "scheduler.cpp",
+      "extension": ".cpp",
+      "mime_type": "text/x-c++",
+      "language": "cpp",
+      "content": "class Scheduler { public: void retry_after(std::chrono::seconds delay); }; // bounded exponential retry"
+    },
+    {
+      "logical_file_id": "systems-java",
+      "filename": "LedgerWriter.java",
+      "extension": ".java",
+      "mime_type": "text/x-java",
+      "language": "java",
+      "content": "class LedgerWriter { void commitAndInvalidate(String key) { ledger.commit(key); cache.invalidate(key); } }"
+    },
+    {
+      "logical_file_id": "systems-js",
+      "filename": "worker.js",
+      "extension": ".js",
+      "mime_type": "text/javascript",
+      "language": "javascript",
+      "content": "export async function retryTask(task) { return task.run(); } // backoff is capped at 30 seconds"
+    },
+    {
+      "logical_file_id": "systems-tsx",
+      "filename": "SearchPanel.tsx",
+      "extension": ".tsx",
+      "mime_type": "text/typescript",
+      "language": "tsx",
+      "content": "export function SearchPanel(){ return <section aria-label=\"Search results\">No results</section>; }"
+    },
+    {
+      "logical_file_id": "systems-rust",
+      "filename": "index.rs",
+      "extension": ".rs",
+      "mime_type": "text/plain",
+      "language": "rust",
+      "content": "pub fn reconcile_root(root: &Path) -> Result<usize, Error> { scan(root) } // preserve unavailable drive entries"
+    },
+    {
+      "logical_file_id": "systems-go",
+      "filename": "watcher.go",
+      "extension": ".go",
+      "mime_type": "text/plain",
+      "language": "go",
+      "content": "func Debounce(event Event, delay time.Duration) { timer.Reset(delay) } // collapse duplicate filesystem notifications"
+    },
+    {
+      "logical_file_id": "unrelated-garden",
+      "filename": "garden-notes.md",
+      "extension": ".md",
+      "mime_type": "text/markdown",
+      "content": "Tomato seedlings need six hours of sunlight. Water the raised beds every other morning."
+    },
+    {
+      "logical_file_id": "aurora-migration-pdf",
+      "filename": "aurora-cache-migration.pdf",
+      "extension": ".pdf",
+      "mime_type": "application/pdf",
+      "content": "Aurora migration note: preserve the fifteen-minute cache expiry during schema migration. Verify invalidation after each successful write.",
+      "metadata": {
+        "page": 1,
+        "section": "Migration"
+      }
+    },
+    {
+      "logical_file_id": "aurora-review-docx",
+      "filename": "aurora-cache-review.docx",
+      "extension": ".docx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "content": "Aurora review: the LRU policy bounds cache entries and records stale-key invalidation after writes.",
+      "metadata": {
+        "section": "Review"
+      }
+    },
+    {
+      "logical_file_id": "release-slides-pptx",
+      "filename": "release-health-checks.pptx",
+      "extension": ".pptx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "content": "Slide 1: Release health checks. Slide 2: Validate rollback and replica health before opening traffic.",
+      "metadata": {
+        "slide": 2
+      }
+    },
+    {
+      "logical_file_id": "diagram-jpeg",
+      "filename": "quasar-failover.jpg",
+      "extension": ".jpg",
+      "mime_type": "image/jpeg",
+      "modality": "image",
+      "content": "Synthetic OCR text: Quasar failover promotes the east replica when the west region is unavailable."
+    },
+    {
+      "logical_file_id": "scan-tiff",
+      "filename": "ledger-scan.tiff",
+      "extension": ".tiff",
+      "mime_type": "image/tiff",
+      "modality": "image",
+      "content": "Synthetic OCR reference: regional ledger monthly cost and service table."
+    },
+    {
+      "logical_file_id": "diagram-webp",
+      "filename": "cache-steps.webp",
+      "extension": ".webp",
+      "mime_type": "image/webp",
+      "modality": "image",
+      "content": "Synthetic OCR reference: write cache, invalidate matching key, refresh reader."
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "q-filename-aurora",
+      "text": "aurora-cache-design.md",
+      "kind": "filename",
+      "judgments": [
+        {
+          "logical_file_id": "aurora-design",
+          "grade": 3,
+          "rationale": "Exact filename match."
+        }
+      ],
+      "valid_tools": [
+        "filename"
+      ]
+    },
+    {
+      "query_id": "q-exact-invalidate",
+      "text": "invalidate_after_write",
+      "kind": "exact_keyword",
+      "answerable": true,
+      "reference_answer": "A successful write removes the matching stale cache value.",
+      "evidence": [
+        {
+          "logical_file_id": "aurora-tests",
+          "excerpt": "Remove the stale cache value after a successful write."
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "aurora-tests",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "aurora-design",
+          "grade": 2
+        }
+      ],
+      "valid_tools": [
+        "code",
+        "hybrid",
+        "keyword"
+      ]
+    },
+    {
+      "query_id": "q-semantic-cache",
+      "text": "How long does Aurora retain a cached document before expiration?",
+      "kind": "semantic",
+      "answerable": true,
+      "reference_answer": "Aurora cache entries expire after fifteen minutes.",
+      "evidence": [
+        {
+          "logical_file_id": "aurora-design",
+          "excerpt": "Each cache entry expires after fifteen minutes."
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "aurora-design",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "aurora-tests",
+          "grade": 2
+        },
+        {
+          "logical_file_id": "unrelated-garden",
+          "grade": 0,
+          "rationale": "Unrelated gardening notes."
+        }
+      ],
+      "valid_tools": [
+        "semantic",
+        "hybrid"
+      ]
+    },
+    {
+      "query_id": "q-hybrid-failover",
+      "text": "Quasar east replica recovery when west is down",
+      "kind": "hybrid",
+      "answerable": true,
+      "reference_answer": "Promote the east replica when the west region is unavailable.",
+      "evidence": [
+        {
+          "logical_file_id": "quasar-runbook",
+          "excerpt": "Promote the east replica when the west region is unavailable.",
+          "section": "Failover"
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "quasar-runbook",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "quasar-ledger",
+          "grade": 1
+        }
+      ],
+      "valid_tools": [
+        "hybrid",
+        "keyword",
+        "semantic"
+      ]
+    },
+    {
+      "query_id": "q-code-symbol",
+      "text": "Where is refreshIndex implemented and what does it enqueue?",
+      "kind": "code",
+      "answerable": true,
+      "reference_answer": "refreshIndex in nebula_api.ts enqueues root reconciliation.",
+      "evidence": [
+        {
+          "logical_file_id": "nebula-api",
+          "excerpt": "refreshIndex(rootId) ... enqueueReconciliation(rootId)"
+        }
+      ],
+      "valid_tools": [
+        "code",
+        "hybrid",
+        "keyword",
+        "semantic"
+      ],
+      "expected_tools": [
+        "code",
+        "keyword"
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "nebula-api",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "query_id": "q-spreadsheet-cost",
+      "text": "Quasar monthly cost in the east region",
+      "kind": "spreadsheet",
+      "answerable": true,
+      "reference_answer": "Quasar costs 95 USD per month in the east region.",
+      "evidence": [
+        {
+          "logical_file_id": "quasar-ledger",
+          "excerpt": "quasar,east,95"
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "quasar-ledger",
+          "grade": 3
+        }
+      ],
+      "valid_tools": [
+        "metadata",
+        "keyword",
+        "hybrid",
+        "semantic"
+      ]
+    },
+    {
+      "query_id": "q-ocr-flow",
+      "text": "What sequence does the cache flow diagram show?",
+      "kind": "ocr",
+      "answerable": true,
+      "reference_answer": "Write the cache, invalidate the key, then refresh the reader.",
+      "evidence": [
+        {
+          "logical_file_id": "diagram-ocr",
+          "excerpt": "CACHE WRITE -> INVALIDATE KEY -> REFRESH READER"
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "diagram-ocr",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "aurora-tests",
+          "grade": 1
+        }
+      ],
+      "valid_tools": [
+        "media",
+        "keyword"
+      ]
+    },
+    {
+      "query_id": "q-audio-recall",
+      "text": "What retrieval metric did the search review choose at five?",
+      "kind": "audio",
+      "answerable": true,
+      "reference_answer": "Recall at five.",
+      "evidence": [
+        {
+          "logical_file_id": "meeting-transcript",
+          "excerpt": "measure recall at five for hybrid search"
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "meeting-transcript",
+          "grade": 3
+        }
+      ],
+      "valid_tools": [
+        "keyword",
+        "media",
+        "semantic"
+      ]
+    },
+    {
+      "query_id": "q-date-type",
+      "text": "recent CSV spreadsheets with Quasar costs",
+      "kind": "metadata",
+      "answerable": true,
+      "reference_answer": "The Quasar ledger is a CSV with regional monthly costs.",
+      "evidence": [
+        {
+          "logical_file_id": "quasar-ledger",
+          "excerpt": "service,region,monthly_cost_usd"
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "quasar-ledger",
+          "grade": 3
+        }
+      ],
+      "valid_tools": [
+        "metadata"
+      ]
+    },
+    {
+      "query_id": "q-ambiguous-cache",
+      "text": "the cache thing we discussed, especially after writing",
+      "kind": "ambiguous",
+      "answerable": true,
+      "reference_answer": "The cache invalidates the matching key after a successful write.",
+      "evidence": [
+        {
+          "logical_file_id": "aurora-tests",
+          "excerpt": "invalidate_after_write"
+        },
+        {
+          "logical_file_id": "aurora-design",
+          "excerpt": "A successful write must invalidate the matching key."
+        }
+      ],
+      "valid_tools": [
+        "keyword",
+        "semantic",
+        "hybrid"
+      ],
+      "expected_tools": [
+        "hybrid"
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "aurora-tests",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "aurora-design",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "query_id": "q-no-match",
+      "text": "zebra submarine crystallography archive",
+      "kind": "no_result",
+      "answerable": false,
+      "reference_answer": "No matching file is present in this dataset.",
+      "judgments": [],
+      "valid_tools": [
+        "keyword",
+        "semantic",
+        "hybrid"
+      ]
+    },
+    {
+      "query_id": "q-multiple-systems",
+      "text": "bounded retries and delayed retry behavior",
+      "kind": "multi_relevant",
+      "answerable": true,
+      "reference_answer": "The scheduler uses bounded exponential retry, while the JavaScript worker caps retry backoff at thirty seconds.",
+      "evidence": [
+        {
+          "logical_file_id": "systems-cpp",
+          "excerpt": "bounded exponential retry"
+        },
+        {
+          "logical_file_id": "systems-js",
+          "excerpt": "backoff is capped at 30 seconds"
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "systems-cpp",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "systems-js",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "systems-go",
+          "grade": 1
+        }
+      ],
+      "valid_tools": [
+        "keyword",
+        "semantic",
+        "hybrid"
+      ]
+    },
+    {
+      "query_id": "q-video-rollback",
+      "text": "release recording rollback and replica health",
+      "kind": "video",
+      "answerable": true,
+      "reference_answer": "The release review covered rollback and replica health checks.",
+      "evidence": [
+        {
+          "logical_file_id": "release-recording",
+          "excerpt": "Release review covered rollback and replica health checks."
+        }
+      ],
+      "judgments": [
+        {
+          "logical_file_id": "release-recording",
+          "grade": 3
+        },
+        {
+          "logical_file_id": "quasar-runbook",
+          "grade": 1
+        }
+      ],
+      "valid_tools": [
+        "media",
+        "keyword"
+      ]
+    }
+  ],
+  "recommendation_scenarios": [
+    {
+      "scenario_id": "cold-start",
+      "profile": "cold_start",
+      "category": "recommended_for_you",
+      "relevant_file_ids": [
+        "aurora-design",
+        "vector-notes"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "code-user",
+      "profile": "frequent_code_user",
+      "category": "recommended_for_you",
+      "relevant_file_ids": [
+        "aurora-tests",
+        "nebula-api",
+        "systems-go"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "sheet-user",
+      "profile": "spreadsheet_focused",
+      "category": "related",
+      "relevant_file_ids": [
+        "quasar-ledger",
+        "orbit-budget"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "no-available-files",
+      "profile": "excluded_all_types",
+      "category": "recommended_for_you",
+      "relevant_file_ids": [],
+      "expected_empty": true
+    },
+    {
+      "scenario_id": "recently-accessed",
+      "profile": "frequent_code_user",
+      "category": "recently_accessed",
+      "relevant_file_ids": [
+        "aurora-tests"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "continue-work",
+      "profile": "multiple_project_user",
+      "category": "continue_working",
+      "relevant_file_ids": [
+        "quasar-runbook"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "frequent-use",
+      "profile": "code_user_with_negative_feedback",
+      "category": "frequently_used",
+      "relevant_file_ids": [
+        "nebula-api"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "recently-indexed",
+      "profile": "changing_interests",
+      "category": "recently_indexed",
+      "relevant_file_ids": [
+        "release-slides-pptx"
+      ],
+      "expected_empty": false
+    },
+    {
+      "scenario_id": "new-project",
+      "profile": "multiple_project_user",
+      "category": "related",
+      "relevant_file_ids": [
+        "quasar-ledger",
+        "quasar-runbook"
+      ],
+      "expected_empty": false
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "dataset": "scoutx-small",
+  "dataset_version": "1.0.0",
+  "rankings": [],
+  "reranking": [],
+  "rag": [],
+  "citations": [],
+  "agent": [],
+  "personalization": [],
+  "recommendations": [],
+  "ingestion": [],
+  "performance": [],
+  "reliability": []
+}
