@@ -31,9 +31,10 @@ function formatDate(value?: string | null): string {
 interface FileListProps {
   files?: FileRecord[]
   message?: string
+  onSelect?: (file: FileRecord) => void
 }
 
-export function FileList({ files = [], message }: FileListProps) {
+export function FileList({ files = [], message, onSelect }: FileListProps) {
   if (!files.length) {
     return (
       <div className="rounded-2xl border border-dashed border-[#dce4de] bg-white/70 px-6 py-12 text-center">
@@ -50,7 +51,9 @@ export function FileList({ files = [], message }: FileListProps) {
         <article key={file.id} className="flex items-center gap-4 border-b border-[#edf0ee] px-5 py-4 last:border-0">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#eff4f0] text-sm font-semibold uppercase text-[#537262]">{file.name.split('.').pop()?.slice(0, 3) ?? 'FILE'}</span>
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-semibold text-[#27352e]">{file.name}</h3>
+            {onSelect
+              ? <button type="button" onClick={() => onSelect(file)} className="truncate text-left text-sm font-semibold text-[#27352e] hover:text-[#246246]">{file.name}</button>
+              : <h3 className="truncate text-sm font-semibold text-[#27352e]">{file.name}</h3>}
             <p className="truncate text-xs text-[#929c95]">{file.path}</p>
             <p className="mt-1 text-xs text-[#929c95]">{file.mime_type ?? 'Unknown type'} · {formatSize(file.size_bytes)} · Modified {formatDate(file.modified_at)}</p>
             {file.parser_status && <p className="mt-1 text-xs text-[#6f7d74]">Parser: {file.parser_status}</p>}
