@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api import feedback, files, indexing, personalization, recommendations, roots, search
 from app.config import get_settings
 from app.database.engine import engine
+from app.ingestion.watcher import FilesystemWatcherManager
 from app.observability import (
     TelemetryRuntime,
     configure_structured_logging,
@@ -65,9 +66,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     their shared contracts and lifecycle are supplied by the infrastructure phase.
     """
     logger.info("Starting ScoutX API")
+    watcher_manager = FilesystemWatcherManager()
+    app.state.watcher_manager = watcher_manager
     try:
         yield
     finally:
+        watcher_manager.stop_all()
+        if hasattr(app.state, "watcher_manager"):
+            del app.state.watcher_manager
         if _telemetry_runtime is not None:
             _telemetry_runtime.tracer_provider.shutdown()
             _telemetry_runtime.meter_provider.shutdown()

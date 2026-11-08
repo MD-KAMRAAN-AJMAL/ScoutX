@@ -145,6 +145,32 @@ def test_register_root_validates_and_canonicalizes_directory(tmp_path: Path) -> 
     assert FakeRootRepository.requested[0].canonical_path == str(tmp_path.resolve())
 
 
+def test_registering_root_starts_and_application_shutdown_stops_watchers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app import main as main_module
+
+    class RecordingWatcherManager:
+        def __init__(self) -> None:
+            self.started: list[tuple[uuid.UUID, uuid.UUID]] = []
+            self.stopped = False
+
+        def start_root(self, _session: Any, user_id: uuid.UUID, root_id: uuid.UUID) -> None:
+            self.started.append((user_id, root_id))
+
+        def stop_all(self) -> None:
+            self.stopped = True
+
+    manager = RecordingWatcherManager()
+    monkeypatch.setattr(main_module, "FilesystemWatcherManager", lambda: manager)
+
+    response = call("POST", "/api/v1/roots", json={"path": str(tmp_path)})
+
+    assert response.status_code == 201
+    assert manager.started == [(USER_ID, ROOT_ID)]
+    assert manager.stopped
+
+
 def test_register_root_rejects_invalid_path() -> None:
     response = call("POST", "/api/v1/roots", json={"path": "/path/that/does/not/exist"})
 
