@@ -67,7 +67,9 @@ class FileRead(ORMModel):
     modified_at: datetime | None
     content_hash: str | None
     version: int
-    indexing_status: Literal["pending", "queued", "processing", "indexed", "failed", "excluded", "deleted"]
+    indexing_status: Literal[
+        "pending", "queued", "processing", "indexed", "failed", "excluded", "deleted"
+    ]
     last_indexed_at: datetime | None
     created_at: datetime
     updated_at: datetime
