@@ -113,9 +113,7 @@ def _file_response(file: File) -> FileRecord:
     )
 
 
-def _file_conditions(
-    user_id: uuid.UUID, root_id: uuid.UUID | None
-) -> list[ColumnElement[bool]]:
+def _file_conditions(user_id: uuid.UUID, root_id: uuid.UUID | None) -> list[ColumnElement[bool]]:
     conditions = [File.user_id == user_id]
     if root_id is not None:
         conditions.append(File.root_id == root_id)

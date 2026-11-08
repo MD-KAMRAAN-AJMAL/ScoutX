@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Protocol
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -119,7 +119,7 @@ def indexing_status(
 )
 def reconcile(
     request: Request,
-    body: ReconcileRequest = Body(default=ReconcileRequest()),
+    body: ReconcileRequest = Body(default_factory=ReconcileRequest),
     session: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_local_user_id),
 ) -> ReconcileResponse:
@@ -129,12 +129,18 @@ def reconcile(
         if root is None:
             raise HTTPException(
                 status_code=404,
-                detail={"code": "root_not_found", "message": "The registered directory was not found."},
+                detail={
+                    "code": "root_not_found",
+                    "message": "The registered directory was not found.",
+                },
             )
         if not root.is_enabled:
             raise HTTPException(
                 status_code=409,
-                detail={"code": "root_disabled", "message": "Re-enable this directory before reconciling it."},
+                detail={
+                    "code": "root_disabled",
+                    "message": "Re-enable this directory before reconciling it.",
+                },
             )
         roots = [root]
     else:
@@ -143,7 +149,10 @@ def reconcile(
     if not roots:
         raise HTTPException(
             status_code=409,
-            detail={"code": "no_registered_roots", "message": "Register a directory before reconciling."},
+            detail={
+                "code": "no_registered_roots",
+                "message": "Register a directory before reconciling.",
+            },
         )
 
     dispatcher: ReconciliationDispatcher | None = getattr(
@@ -173,5 +182,5 @@ def reconcile(
         accepted=True,
         root_ids=[root.id for root in roots],
         task_ids=task_ids,
-        submitted_at=datetime.now(timezone.utc),
+        submitted_at=datetime.now(UTC),
     )
