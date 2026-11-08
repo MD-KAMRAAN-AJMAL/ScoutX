@@ -8,14 +8,14 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Self
 
 import pytest
 from sqlalchemy.sql import operators
 
 from app.database.models import File, IndexRoot
-from app.ingestion.fingerprints import fingerprint_file, hash_file_streaming
 from app.ingestion.file_detector import FileDetector
+from app.ingestion.fingerprints import fingerprint_file, hash_file_streaming
 from app.ingestion.scanner import FileScanner, register_directory
 from app.ingestion.watcher import DebouncedFilesystemEventHandler
 from app.security import permissions
@@ -72,10 +72,10 @@ class FakeSession:
     def execute(self, *_: Any, **__: Any) -> None:
         return None
 
-    def __enter__(self) -> FakeSession:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_: Any) -> None:
+    def __exit__(self, *_: object) -> None:
         return None
 
     def commit(self) -> None:

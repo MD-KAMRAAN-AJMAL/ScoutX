@@ -4,15 +4,13 @@ import sys
 import types
 import uuid
 import zipfile
-from pathlib import Path
 
 import pytest
 
 from app.ingestion.code_parser import CodeParser
 from app.ingestion.docling_parser import DoclingParser, SpreadsheetParser
-from app.ingestion.normalized import ExtractedBlock, ExtractedDocument, ExtractionStatus
+from app.ingestion.normalized import ExtractedBlock, ExtractionStatus
 from app.ingestion.parser_registry import ParserRegistry
-
 
 FILE_ID = uuid.uuid4()
 
@@ -107,7 +105,7 @@ def test_docling_keeps_presentation_slide_number(tmp_path, monkeypatch):
     class Item:
         text = "Slide content"
         label = "text"
-        prov = [Provenance()]
+        prov = (Provenance(),)
 
     class Document:
         def iterate_items(self):
