@@ -61,10 +61,16 @@ class IndexRootRepository:
         return root
 
     def get(self, user_id: uuid.UUID, root_id: uuid.UUID) -> IndexRoot | None:
-        return self.session.scalar(select(IndexRoot).where(IndexRoot.id == root_id, IndexRoot.user_id == user_id))
+        return self.session.scalar(
+            select(IndexRoot).where(IndexRoot.id == root_id, IndexRoot.user_id == user_id)
+        )
 
-    def list_for_user(self, user_id: uuid.UUID, *, enabled_only: bool = False) -> Sequence[IndexRoot]:
-        statement = select(IndexRoot).where(IndexRoot.user_id == user_id).order_by(IndexRoot.created_at)
+    def list_for_user(
+        self, user_id: uuid.UUID, *, enabled_only: bool = False
+    ) -> Sequence[IndexRoot]:
+        statement = (
+            select(IndexRoot).where(IndexRoot.user_id == user_id).order_by(IndexRoot.created_at)
+        )
         if enabled_only:
             statement = statement.where(IndexRoot.is_enabled.is_(True))
         return self.session.scalars(statement).all()
@@ -89,7 +95,9 @@ class FileRepository:
     def get(self, user_id: uuid.UUID, file_id: uuid.UUID) -> File | None:
         return self.session.scalar(select(File).where(File.id == file_id, File.user_id == user_id))
 
-    def get_by_path(self, user_id: uuid.UUID, root_id: uuid.UUID, canonical_path: str) -> File | None:
+    def get_by_path(
+        self, user_id: uuid.UUID, root_id: uuid.UUID, canonical_path: str
+    ) -> File | None:
         return self.session.scalar(
             select(File).where(
                 File.user_id == user_id,
@@ -111,11 +119,21 @@ class FileRepository:
             .offset(offset)
         ).all()
 
-    def update_indexing_status(self, user_id: uuid.UUID, file_id: uuid.UUID, status: str) -> File | None:
+    def update_indexing_status(
+        self, user_id: uuid.UUID, file_id: uuid.UUID, status: str
+    ) -> File | None:
         file = self.get(user_id, file_id)
         if file is None:
             return None
-        if status not in {"pending", "queued", "processing", "indexed", "failed", "excluded", "deleted"}:
+        if status not in {
+            "pending",
+            "queued",
+            "processing",
+            "indexed",
+            "failed",
+            "excluded",
+            "deleted",
+        }:
             raise ValueError("Unsupported indexing status")
         file.indexing_status = status
         self.session.flush()
@@ -150,7 +168,9 @@ class DocumentChunkRepository:
     def list_for_file(
         self, user_id: uuid.UUID, file_id: uuid.UUID, *, content_version: int | None = None
     ) -> Sequence[DocumentChunk]:
-        statement = select(DocumentChunk).join(File).where(File.user_id == user_id, File.id == file_id)
+        statement = (
+            select(DocumentChunk).join(File).where(File.user_id == user_id, File.id == file_id)
+        )
         if content_version is not None:
             statement = statement.where(DocumentChunk.content_version == content_version)
         return self.session.scalars(statement.order_by(DocumentChunk.chunk_index)).all()
@@ -161,13 +181,23 @@ class IndexJobRepository:
         self.session = session
 
     def create(self, user_id: uuid.UUID, data: IndexJobCreate) -> IndexJob:
-        if data.root_id and self.session.scalar(
-            select(IndexRoot.id).where(IndexRoot.id == data.root_id, IndexRoot.user_id == user_id)
-        ) is None:
+        if (
+            data.root_id
+            and self.session.scalar(
+                select(IndexRoot.id).where(
+                    IndexRoot.id == data.root_id, IndexRoot.user_id == user_id
+                )
+            )
+            is None
+        ):
             raise LookupError("Index root does not exist for this user")
-        if data.file_id and self.session.scalar(
-            select(File.id).where(File.id == data.file_id, File.user_id == user_id)
-        ) is None:
+        if (
+            data.file_id
+            and self.session.scalar(
+                select(File.id).where(File.id == data.file_id, File.user_id == user_id)
+            )
+            is None
+        ):
             raise LookupError("File does not exist for this user")
         job = IndexJob(user_id=user_id, **data.model_dump())
         self.session.add(job)
@@ -176,7 +206,10 @@ class IndexJobRepository:
 
     def list_for_user(self, user_id: uuid.UUID, *, limit: int = 100) -> Sequence[IndexJob]:
         return self.session.scalars(
-            select(IndexJob).where(IndexJob.user_id == user_id).order_by(IndexJob.created_at.desc()).limit(limit)
+            select(IndexJob)
+            .where(IndexJob.user_id == user_id)
+            .order_by(IndexJob.created_at.desc())
+            .limit(limit)
         ).all()
 
 
@@ -208,8 +241,12 @@ class ProjectRepository:
         self.session.flush()
         return project
 
-    def attach_file(self, user_id: uuid.UUID, project_id: uuid.UUID, file_id: uuid.UUID) -> ProjectFile:
-        project = self.session.scalar(select(Project).where(Project.id == project_id, Project.user_id == user_id))
+    def attach_file(
+        self, user_id: uuid.UUID, project_id: uuid.UUID, file_id: uuid.UUID
+    ) -> ProjectFile:
+        project = self.session.scalar(
+            select(Project).where(Project.id == project_id, Project.user_id == user_id)
+        )
         file = self.session.scalar(select(File).where(File.id == file_id, File.user_id == user_id))
         if project is None or file is None:
             raise LookupError("Project or file does not exist for this user")
@@ -223,12 +260,25 @@ class ActivityRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def record(self, user_id: uuid.UUID, event_type: str, *, file_id: uuid.UUID | None = None, details: dict | None = None) -> FileActivity:
-        if file_id and self.session.scalar(
-            select(File.id).where(File.id == file_id, File.user_id == user_id)
-        ) is None:
+    def record(
+        self,
+        user_id: uuid.UUID,
+        event_type: str,
+        *,
+        file_id: uuid.UUID | None = None,
+        details: dict | None = None,
+    ) -> FileActivity:
+        if (
+            file_id
+            and self.session.scalar(
+                select(File.id).where(File.id == file_id, File.user_id == user_id)
+            )
+            is None
+        ):
             raise LookupError("File does not exist for this user")
-        activity = FileActivity(user_id=user_id, file_id=file_id, event_type=event_type, details=details or {})
+        activity = FileActivity(
+            user_id=user_id, file_id=file_id, event_type=event_type, details=details or {}
+        )
         self.session.add(activity)
         self.session.flush()
         return activity
@@ -249,15 +299,27 @@ class RecommendationFeedbackRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, user_id: uuid.UUID, data: RecommendationFeedbackCreate) -> RecommendationFeedback:
-        if self.session.scalar(select(File.id).where(File.id == data.file_id, File.user_id == user_id)) is None:
+    def create(
+        self, user_id: uuid.UUID, data: RecommendationFeedbackCreate
+    ) -> RecommendationFeedback:
+        if (
+            self.session.scalar(
+                select(File.id).where(File.id == data.file_id, File.user_id == user_id)
+            )
+            is None
+        ):
             raise LookupError("File does not exist for this user")
-        if data.agent_run_id and self.session.scalar(
-            select(AgentRun.id).where(AgentRun.id == data.agent_run_id, AgentRun.user_id == user_id)
-        ) is None:
+        if (
+            data.agent_run_id
+            and self.session.scalar(
+                select(AgentRun.id).where(
+                    AgentRun.id == data.agent_run_id, AgentRun.user_id == user_id
+                )
+            )
+            is None
+        ):
             raise LookupError("Agent run does not exist for this user")
         record = RecommendationFeedback(user_id=user_id, **data.model_dump())
         self.session.add(record)
         self.session.flush()
         return record
-
