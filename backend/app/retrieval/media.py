@@ -7,7 +7,13 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.embeddings.service import EmbeddingService
-from app.retrieval.common import SearchCandidate, reciprocal_rank_fusion
+from app.retrieval.common import (
+    MediaSearchInput,
+    SearchCandidate,
+    authenticated_user_id,
+    normalize_backend_errors,
+    reciprocal_rank_fusion,
+)
 from app.retrieval.keyword import search_keyword
 from app.retrieval.semantic import search_semantic
 from app.vectorstore.qdrant_client import QdrantStore
@@ -36,6 +42,7 @@ MEDIA_EXTENSIONS = [
 ]
 
 
+@normalize_backend_errors
 def search_media(
     session: Session,
     user_id: UUID,
@@ -48,14 +55,17 @@ def search_media(
     store: QdrantStore | None = None,
 ) -> list[SearchCandidate]:
     """Search image OCR and audio/video transcript chunks, retaining timestamps."""
-    query = query.strip()
-    if not query:
-        return []
-    if mode not in {"keyword", "semantic", "hybrid"}:
-        raise ValueError("mode must be keyword, semantic or hybrid")
-    if limit < 1:
-        raise ValueError("limit must be positive")
-    types = [value.lower() for value in (media_types or ["image", "audio", "video"])]
+    args = MediaSearchInput.model_validate(
+        {
+            "query": query,
+            "limit": limit,
+            "media_types": media_types or ["image", "audio", "video"],
+            "mode": mode,
+        }
+    )
+    user_id = authenticated_user_id(user_id)
+    query = args.query
+    types = args.media_types
     if not set(types) <= {"image", "audio", "video"}:
         raise ValueError("media_types must contain image, audio or video")
     # Video transcripts are normalized with audio modality; file extension identifies video.
@@ -78,25 +88,25 @@ def search_media(
         session,
         user_id,
         query,
-        limit=limit,
+        limit=args.limit,
         extensions=extensions,
         modalities=modalities,
         store=store,
     )
     keyword = [item for item in keyword if item.extension in extensions]
-    if mode == "keyword":
-        return keyword[:limit]
+    if args.mode == "keyword":
+        return keyword[: args.limit]
     semantic = search_semantic(
         session,
         user_id,
         query,
-        limit=limit,
+        limit=args.limit,
         extensions=extensions,
         modalities=modalities,
         embedding_service=embedding_service,
         store=store,
     )
     semantic = [item for item in semantic if item.extension in extensions]
-    if mode == "semantic":
-        return semantic[:limit]
-    return reciprocal_rank_fusion(semantic, keyword, limit=limit, method="media_rrf")
+    if args.mode == "semantic":
+        return semantic[: args.limit]
+    return reciprocal_rank_fusion(semantic, keyword, limit=args.limit, method="media_rrf")

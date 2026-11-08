@@ -7,10 +7,19 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.embeddings.service import EmbeddingService
-from app.retrieval.common import SearchCandidate, deduplicate, point_candidates, qdrant_filter
+from app.retrieval.common import (
+    QuerySearchInput,
+    SearchCandidate,
+    authenticated_user_id,
+    deduplicate,
+    normalize_backend_errors,
+    point_candidates,
+    qdrant_filter,
+)
 from app.vectorstore.qdrant_client import QdrantStore, get_qdrant_store
 
 
+@normalize_backend_errors
 def search_semantic(
     session: Session,
     user_id: UUID,
@@ -24,13 +33,18 @@ def search_semantic(
     store: QdrantStore | None = None,
 ) -> list[SearchCandidate]:
     """Embed one query with Person A's provider and retrieve scoped active vectors."""
-    query = query.strip()
-    if not query:
-        return []
-    if limit < 1:
-        raise ValueError("limit must be positive")
+    args = QuerySearchInput.model_validate(
+        {
+            "query": query,
+            "limit": limit,
+            "extensions": extensions,
+            "modalities": modalities,
+            "languages": languages,
+        }
+    )
+    user_id = authenticated_user_id(user_id)
     embedding_service = embedding_service or EmbeddingService()
-    vectors = embedding_service.embed_queries([query])
+    vectors = embedding_service.embed_queries([args.query])
     if len(vectors) != 1:
         raise RuntimeError("Embedding provider returned an invalid query batch")
     store = store or get_qdrant_store()
@@ -42,9 +56,12 @@ def search_semantic(
         query=vectors[0],
         using=DENSE_VECTOR_NAME,
         query_filter=qdrant_filter(
-            user_id, extensions=extensions, modalities=modalities, languages=languages
+            user_id,
+            extensions=args.extensions,
+            modalities=args.modalities,
+            languages=args.languages,
         ),
-        limit=limit,
+        limit=args.limit,
         with_payload=True,
         with_vectors=False,
     )

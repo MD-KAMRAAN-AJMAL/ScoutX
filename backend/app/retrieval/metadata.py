@@ -9,9 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database.models import DocumentChunk, File
-from app.retrieval.common import SearchCandidate, active_chunk_condition, deduplicate
+from app.retrieval.common import (
+    MetadataSearchInput,
+    SearchCandidate,
+    active_chunk_condition,
+    authenticated_user_id,
+    deduplicate,
+    normalize_backend_errors,
+)
 
 
+@normalize_backend_errors
 def search_metadata(
     session: Session,
     user_id: UUID,
@@ -26,8 +34,19 @@ def search_metadata(
     limit: int = 100,
 ) -> list[SearchCandidate]:
     """Search file attributes and return current chunks as provenance-bearing results."""
-    if not 1 <= limit <= 1000:
-        raise ValueError("limit must be between 1 and 1000")
+    args = MetadataSearchInput.model_validate(
+        {
+            "extensions": extensions,
+            "mime_types": mime_types,
+            "root_id": root_id,
+            "modified_after": modified_after,
+            "modified_before": modified_before,
+            "filename_contains": filename_contains,
+            "path_contains": path_contains,
+            "limit": limit,
+        }
+    )
+    user_id = authenticated_user_id(user_id)
     stmt = (
         select(DocumentChunk, File)
         .join(File, File.id == DocumentChunk.file_id)
@@ -36,28 +55,26 @@ def search_metadata(
             active_chunk_condition(),
         )
     )
-    if extensions:
+    if args.extensions:
         stmt = stmt.where(
-            File.extension.in_(
-                [e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions]
-            )
+            File.extension.in_([e if e.startswith(".") else f".{e}" for e in args.extensions])
         )
-    if mime_types:
-        stmt = stmt.where(File.mime_type.in_(mime_types))
-    if root_id:
-        stmt = stmt.where(File.root_id == root_id)
-    if modified_after:
-        stmt = stmt.where(File.modified_at >= modified_after)
-    if modified_before:
-        stmt = stmt.where(File.modified_at <= modified_before)
-    if filename_contains:
-        stmt = stmt.where(File.filename.ilike(f"%{filename_contains.strip()}%"))
-    if path_contains:
-        stmt = stmt.where(File.canonical_path.ilike(f"%{path_contains.strip()}%"))
+    if args.mime_types:
+        stmt = stmt.where(File.mime_type.in_(args.mime_types))
+    if args.root_id:
+        stmt = stmt.where(File.root_id == args.root_id)
+    if args.modified_after:
+        stmt = stmt.where(File.modified_at >= args.modified_after)
+    if args.modified_before:
+        stmt = stmt.where(File.modified_at <= args.modified_before)
+    if args.filename_contains:
+        stmt = stmt.where(File.filename.ilike(f"%{args.filename_contains.strip()}%"))
+    if args.path_contains:
+        stmt = stmt.where(File.canonical_path.ilike(f"%{args.path_contains.strip()}%"))
     rows = session.execute(
         stmt.order_by(
             File.modified_at.desc().nullslast(), File.canonical_path, DocumentChunk.chunk_index
-        ).limit(limit)
+        ).limit(args.limit)
     ).all()
     return deduplicate(
         SearchCandidate(
@@ -75,6 +92,7 @@ def search_metadata(
             start_time_ms=chunk.start_time_ms,
             end_time_ms=chunk.end_time_ms,
             retrieval_method="metadata",
+            source_references=list((chunk.chunk_metadata or {}).get("source_references", [])),
         )
         for chunk, file in rows
     )
