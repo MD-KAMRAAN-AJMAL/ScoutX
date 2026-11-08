@@ -38,3 +38,56 @@ The Compose PostgreSQL service uses trust authentication for local development a
 - Run inventory workers with `uv run celery -A app.workers.celery_app:celery_app worker --loglevel=INFO`; run periodic root reconciliation with `uv run celery -A app.workers.celery_app:celery_app beat --loglevel=INFO`.
 
 The extracted chunk text is stored in PostgreSQL (`document_chunks.content`). Qdrant point IDs are references only; Qdrant is not the canonical source for file or chunk records.
+
+## Phase 8 API and frontend
+
+Start the local dependencies from the repository root, then apply the database schema and start the API:
+
+```sh
+docker compose up -d
+cd backend
+uv sync
+cp .env.example .env
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+In a second terminal, configure and start the Vite application:
+
+```sh
+cd frontend
+npm ci
+cp .env.example .env.local
+npm run dev
+```
+
+Set `VITE_API_BASE_URL` in `frontend/.env.local` if the API is hosted elsewhere. Backend configuration is read from `backend/.env`; commonly adjusted values include `DATABASE_URL`, `QDRANT_URL`, `REDIS_URL`, `SCOUTX_OLLAMA_BASE_URL`, `SCOUTX_OLLAMA_MODEL`, and `SCOUTX_CORS_ORIGINS`. The example files contain local development defaults and no credentials.
+
+### API endpoints
+
+- `GET /api/v1/health` reports API availability and the PostgreSQL, Qdrant, Redis, and Ollama reachability checks.
+- `POST /api/v1/search` runs the existing LangGraph retrieval pipeline. The request supports `query`, `limit`, `mode`, `generate_answer`, `extensions`, `root_id`, `modified_after`, and `modified_before`.
+- `GET /api/v1/files` lists files with pagination, folder, filename, extension, status, modification-time, and sort filters.
+- `GET /api/v1/files/{file_id}` returns user-scoped file metadata and active extracted snippets. It accepts a file ID, never a filesystem path.
+- `GET /api/v1/indexing/status` returns indexing counts and recent jobs. `/api/v1/index/status` remains an alias.
+- `POST /api/v1/feedback` records relevant/not-relevant and opened/selected events.
+- `GET/POST/DELETE /api/v1/roots` manages explicitly authorized folders; `POST /api/v1/index/reconcile` queues reconciliation for registered roots.
+
+Example retrieval-only request:
+
+```sh
+curl -X POST http://127.0.0.1:8000/api/v1/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Find the budget forecast","generate_answer":false,"extensions":[".xlsx"]}'
+```
+
+Run checks from the repository root:
+
+```sh
+cd backend && uv run ruff check app tests && uv run pytest -q
+cd ../frontend && npm test && npm run build
+```
+
+The health endpoint remains available when a dependency is down and reports `degraded` without returning connection strings. Search can return retrieval results even when answer generation fails. File paths shown in file/search responses are relative to the authorized folder; details and snippets are resolved through the authenticated file ID.
+
+Troubleshooting: confirm Docker services are running, `backend/.env` points to their addresses, Ollama is serving the configured model for answer generation, and `SCOUTX_CORS_ORIGINS` includes the frontend origin (`http://127.0.0.1:5173` by default). The frontend displays an API or dependency error when a service cannot be reached.

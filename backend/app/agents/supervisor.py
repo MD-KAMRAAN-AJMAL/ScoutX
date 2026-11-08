@@ -68,6 +68,7 @@ async def run_supervisor(
     reranker=None,
     answer_generator=None,
     generate_answer: bool = True,
+    search_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     graph_args = {
         "user_id": user_id,
@@ -81,6 +82,7 @@ async def run_supervisor(
         "reranker": reranker,
         "answer_generator": answer_generator,
         "generate_answer": generate_answer,
+        "search_filters": search_filters,
     }
     state = {
         "original_query": query,
