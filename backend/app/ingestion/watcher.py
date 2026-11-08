@@ -9,7 +9,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Self
 
 from sqlalchemy.orm import Session
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -310,7 +310,7 @@ class FilesystemWatcherManager:
         for watcher in watchers:
             watcher.stop()
 
-    def __enter__(self) -> FilesystemWatcherManager:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:

@@ -6,7 +6,6 @@ import os
 import stat
 from pathlib import Path
 
-
 SYSTEM_EXCLUDED_ROOTS = (Path("/proc"), Path("/sys"), Path("/dev"))
 EXCLUDED_DIRECTORY_NAMES = frozenset(
     {
@@ -91,7 +90,11 @@ def require_readable_directory(path: str | os.PathLike[str]) -> Path:
         info = candidate.lstat()
     except OSError as exc:
         raise RootUnavailableError(f"Registered root is unavailable: {candidate}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or not _access(candidate, os.R_OK | os.X_OK):
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or not _access(candidate, os.R_OK | os.X_OK)
+    ):
         raise RootUnavailableError(f"Registered root is not readable: {candidate}")
     if _is_within_system_excluded_root(candidate):
         raise RootUnavailableError(f"Registered root is excluded: {candidate}")
@@ -124,7 +127,9 @@ def is_excluded_path(
     candidate = Path(os.path.abspath(os.fspath(path)))
     if _is_within_system_excluded_root(candidate):
         return True
-    if candidate.name in EXCLUDED_FILE_NAMES or candidate.name.lower().endswith(EXCLUDED_FILE_SUFFIXES):
+    if candidate.name in EXCLUDED_FILE_NAMES or candidate.name.lower().endswith(
+        EXCLUDED_FILE_SUFFIXES
+    ):
         return True
     for parent in (candidate, *candidate.parents):
         if parent.name.lower() in EXCLUDED_DIRECTORY_NAMES:

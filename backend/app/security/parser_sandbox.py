@@ -10,9 +10,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 
 class ParserInputError(ValueError):
@@ -56,7 +56,11 @@ def run_tool(
     resolved = shutil.which(executable) if not Path(executable).is_absolute() else executable
     if not resolved or not Path(resolved).is_file():
         raise FileNotFoundError(f"Required executable is unavailable: {executable}")
-    env = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}
+    }
     return subprocess.run(
         [resolved, *map(str, args)],
         check=check,
