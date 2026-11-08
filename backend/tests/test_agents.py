@@ -16,9 +16,26 @@ from app.agents.planner import deterministic_understanding, plan_retrieval, unde
 from app.agents.schemas import QueryUnderstanding
 from app.agents.tools import make_retrieval_tools
 from app.api.search import SearchRequest, search_files
+from app.reranking.schemas import RerankedCandidate
 from app.retrieval.common import SearchCandidate
 
 USER = UUID("00000000-0000-4000-8000-000000000001")
+
+
+def _identity_reranker(_query, values):
+    ranked = []
+    for value in values:
+        candidate = SearchCandidate.model_validate(value)
+        score = min(1.0, candidate.relevance_score)
+        ranked.append(
+            RerankedCandidate(
+                candidate=candidate,
+                original_retrieval_score=candidate.relevance_score,
+                reranker_score=score,
+                final_score=score,
+            )
+        )
+    return ranked, "test"
 
 
 @pytest.mark.parametrize(
@@ -231,6 +248,8 @@ def test_graph_runs_semantic_then_adapts_to_hybrid_and_exposes_trace(tmp_path):
             session_factory=lambda: nullcontext(object()),
             context_loader=lambda _session, _user: {"preferences": {}, "recent_files": []},
             run_recorder=lambda _state: None,
+            reranker=_identity_reranker,
+            generate_answer=False,
         )
         initial = {
             "original_query": "Find document explaining FlashAttention IO-awareness",
@@ -331,6 +350,8 @@ def test_graph_applies_metadata_prefilter_to_parallel_content_results(tmp_path):
             session_factory=lambda: nullcontext(object()),
             context_loader=lambda _session, _user: {},
             run_recorder=lambda _state: None,
+            reranker=_identity_reranker,
+            generate_answer=False,
         )
         initial = {
             "original_query": "Find PDF explaining FlashAttention",
@@ -355,3 +376,88 @@ def test_graph_applies_metadata_prefilter_to_parallel_content_results(tmp_path):
         assert final["candidate_counts"] == {"metadata": 1, "semantic": 2}
 
     asyncio.run(exercise())
+
+
+def test_graph_produces_file_context_citations_and_supports_retrieval_only(tmp_path):
+    source_path = tmp_path / "answer.txt"
+    source_path.write_text("The documented result is 42.", encoding="utf-8")
+    hit = SearchCandidate(
+        file_id=uuid4(),
+        chunk_id=uuid4(),
+        file_name=source_path.name,
+        file_path=str(source_path),
+        content="The documented result is 42.",
+        modality="text",
+        extension=".txt",
+        relevance_score=0.9,
+        content_version=3,
+        retrieval_method="keyword",
+        source_references=[{"page_number": 1}],
+    )
+
+    @tool
+    def filename(query: str, limit: int = 20) -> str:
+        """Find files by exact filename."""
+        return json.dumps([hit.model_dump(mode="json")])
+
+    async def generate(query, context, _llm):
+        assert query == "Find answer.txt"
+        assert context.evidence[0].content_version == 3
+        return (
+            "The documented result is 42 [S1].",
+            [
+                {
+                    "citation_id": "S1",
+                    "file_id": context.evidence[0].file_id,
+                    "chunk_id": context.evidence[0].chunk_id,
+                    "file_name": context.evidence[0].file_name,
+                    "file_path": context.evidence[0].file_path,
+                    "content_version": 3,
+                    "source_references": [{"page_number": 1}],
+                }
+            ],
+            "succeeded",
+        )
+
+    def execute(generate_answer):
+        run_id = uuid4()
+        graph = build_agent_graph(
+            user_id=USER,
+            run_id=run_id,
+            retrieval_tools=[filename],
+            checkpointer=MemorySaver(),
+            session_factory=lambda: nullcontext(object()),
+            context_loader=lambda _session, _user: {},
+            run_recorder=lambda _state: None,
+            reranker=_identity_reranker,
+            answer_generator=generate,
+            generate_answer=generate_answer,
+        )
+        return asyncio.run(
+            graph.ainvoke(
+                {
+                    "original_query": "Find answer.txt",
+                    "query": "Find answer.txt",
+                    "request_mode": "auto",
+                    "run_id": str(run_id),
+                    "retry_count": 0,
+                    "max_retries": 0,
+                    "tools_invoked": [],
+                    "candidate_counts": {},
+                    "results": [],
+                    "errors": [],
+                    "execution_trace": [],
+                    "generate_answer": generate_answer,
+                },
+                {"configurable": {"thread_id": str(uuid4())}},
+            )
+        )
+
+    generated = execute(True)
+    assert generated["files"][0]["file_id"] == str(hit.file_id)
+    assert generated["citations"][0]["content_version"] == 3
+    assert generated["generation_status"] == "succeeded"
+    retrieval_only = execute(False)
+    assert retrieval_only["answer"] is None
+    assert retrieval_only["generation_status"] == "retrieval_only"
+    assert retrieval_only["files"]
