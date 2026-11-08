@@ -27,5 +27,6 @@ claim a public deployment or production release.
 | Evaluation | Live retrieval/model benchmark | NOT RUN | Requires captured live artifacts; offline baseline is not production search. |
 | Observability | Structured logs and health/liveness response | NOT RUN | Live service probes/log inspection need a running stack. |
 | Documentation | README and installation/configuration/deployment/demo guides | PASS | Added guides linked from the root README; recheck commands after final edits. |
-| Git | Dedicated branch, focused commit(s), no unrelated files | NOT RUN | Current branch is `feature/phase-12-final-release`; commits are pending. |
-| Git | Branch pushed and merged | NOT RUN | No push or merge requested in this phase brief; release commands are provided in the final report. |
+| Git | Dedicated branch, focused commits, no unrelated files | PASS | Phase 12 work is committed on `feature/phase-12-final-release`; staged-file review found only this phase's implementation, tests, docs, and synthetic fixtures. |
+| Git | Feature branch published to origin | PASS | `origin/feature/phase-12-final-release` was created and tracks the local finalization branch. |
+| Git | Merged into stable integration branch/main | NOT RUN | This phase leaves integration to the maintainer; `main` remains unchanged. Exact merge commands are in the final report. |
