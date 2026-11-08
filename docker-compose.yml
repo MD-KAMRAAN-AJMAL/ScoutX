@@ -101,7 +101,7 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-    command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "/opt/venv/bin/alembic upgrade head && /opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/live', timeout=2)"]
       interval: 10s
@@ -139,7 +139,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    command: ["uv", "run", "celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO"]
+    command: ["/opt/venv/bin/celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO"]
     restart: unless-stopped
 
   worker-beat:
@@ -153,7 +153,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    command: ["uv", "run", "celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel=INFO"]
+    command: ["/opt/venv/bin/celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel=INFO"]
     restart: unless-stopped
 
   frontend:
