@@ -119,7 +119,7 @@ export function SearchPage() {
         </div>
       </details>
       <div className="mt-4"><SearchBar onSearch={(query) => { void search(query) }} busy={busy} onCancel={cancel} /></div>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#78857d]"><span className="mr-1 py-2">Try:</span>{['meeting notes from Tuesday', 'the file with budget forecasts', 'main.py'].map((example) => <span key={example} className="rounded-full border border-[#e4e9e5] bg-white px-3 py-2">“{example}”</span>)}</div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#78857d]"><span className="mr-1 py-2">Try:</span>{['database normalization', 'validate signed bearer sessions', 'monthly expenses'].map((example) => <span key={example} className="rounded-full border border-[#e4e9e5] bg-white px-3 py-2">“{example}”</span>)}</div>
       {!response && <RecommendationsPanel />}
 
       {notice && <div role="alert" className="mt-8 rounded-xl border border-[#f0d7d2] bg-[#fff7f5] px-4 py-3 text-sm text-[#965748]">{notice}</div>}

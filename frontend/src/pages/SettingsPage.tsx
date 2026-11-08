@@ -9,6 +9,7 @@ export function SettingsPage() {
   const [notice, setNotice] = useState('')
   const [rootPath, setRootPath] = useState('')
   const [savingRoot, setSavingRoot] = useState(false)
+  const [disablingRootId, setDisablingRootId] = useState<string>()
 
   useEffect(() => {
     Promise.all([api.roots(), api.indexStatus()]).then(([rootList, status]) => {
@@ -36,6 +37,21 @@ export function SettingsPage() {
     }
   }
 
+  async function disableRoot(root: RootRecord) {
+    if (disablingRootId) return
+    setDisablingRootId(root.id)
+    setNotice('')
+    try {
+      await api.removeRoot(root.id)
+      setRoots((existing) => existing.map((item) => item.id === root.id ? { ...item, status: 'disabled' } : item))
+      setNotice('Folder monitoring is disabled. Existing indexed records have been kept.')
+    } catch (error) {
+      setNotice(error instanceof APIRequestError ? error.message : 'Folder could not be disabled.')
+    } finally {
+      setDisablingRootId(undefined)
+    }
+  }
+
   return <div className="mx-auto max-w-5xl px-6 py-12 sm:px-10">
     <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#71917e]">Workspace</p>
     <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[#1d2923]">Settings</h1>
@@ -50,7 +66,7 @@ export function SettingsPage() {
           <input id="root-path" value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder="/path/to/folder" className="min-w-0 flex-1 rounded-xl border border-[#e2e8e3] bg-[#fbfcfb] px-3 py-2.5 text-sm outline-none focus:border-[#9bcdb7]" />
           <button disabled={!rootPath.trim() || savingRoot} className="rounded-xl bg-[#1c5b45] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#164b38] disabled:cursor-not-allowed disabled:opacity-45">{savingRoot ? 'Adding…' : 'Add folder'}</button>
         </form>
-        {roots.length ? <ul className="mt-5 space-y-3">{roots.map((root) => <li key={root.id} className="rounded-xl bg-[#f7f9f7] p-4"><p className="text-sm font-medium text-[#334139]">{root.display_name ?? root.path}</p><p className="mt-1 break-all text-xs text-[#8b968f]">{root.path}</p></li>)}</ul> : <div className="mt-5 rounded-xl border border-dashed border-[#dce4de] px-4 py-8 text-center text-sm text-[#89948d]">{notice ? 'Folder management is not available yet.' : 'No folders connected.'}</div>}
+        {roots.length ? <ul className="mt-5 space-y-3">{roots.map((root) => <li key={root.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#f7f9f7] p-4"><div className="min-w-0"><p className="break-all text-sm font-medium text-[#334139]">{root.display_name ?? root.path}</p><p className="mt-1 break-all text-xs text-[#8b968f]">{root.path}</p><p className="mt-2 text-[11px] text-[#78857d]">{root.status === 'enabled' ? 'Monitoring enabled' : 'Monitoring disabled'}</p></div>{root.status === 'enabled' && <button type="button" disabled={Boolean(disablingRootId)} onClick={() => void disableRoot(root)} className="rounded-lg border border-[#e1e7e2] px-3 py-2 text-xs font-medium text-[#65736a] hover:bg-white disabled:opacity-50">{disablingRootId === root.id ? 'Disabling…' : 'Disable folder'}</button>}</li>)}</ul> : <div className="mt-5 rounded-xl border border-dashed border-[#dce4de] px-4 py-8 text-center text-sm text-[#89948d]">{notice ? 'Folder management is not available yet.' : 'No folders connected.'}</div>}
         <p className="mt-4 text-xs leading-5 text-[#9aa39d]">You authorize each folder before ScoutX indexes it.</p>
       </section>
       <IndexingStatusCard status={indexStatus} unavailable={Boolean(notice)} />

@@ -1,0 +1,5 @@
+month,category,amount_usd,notes
+2026-01,hosting,120,synthetic cloud test environment
+2026-01,testing,85,synthetic QA services
+2026-02,hardware,230,synthetic local indexing workstation
+2026-02,documentation,75,synthetic technical writing

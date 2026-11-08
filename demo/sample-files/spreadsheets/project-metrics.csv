@@ -1,0 +1,4 @@
+iteration,files_discovered,files_indexed,tests_passed,notes
+alpha,18,16,42,synthetic parser integration pass
+beta,31,29,57,synthetic retrieval contract pass
+release,44,42,63,synthetic end-to-end readiness sample
