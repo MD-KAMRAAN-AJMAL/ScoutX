@@ -291,13 +291,13 @@ def generate_embeddings(self: Task, user_id: str, file_id: str, version: int) ->
     service = EmbeddingService()
     store = get_qdrant_store()
     prepared = [(chunk, *prepare_point(chunk, file_snapshot, service)) for chunk in chunks]
-    stored = store.existing_fingerprints([point_id for _, point_id, _, _ in prepared])
+    stored = store.existing_fingerprints(owner_id, [point_id for _, point_id, _, _ in prepared])
     pending = []
     expected_existing: dict[UUID, str] = {}
     for chunk, point_id, fingerprint, payload in prepared:
         if stored.get(point_id) == fingerprint:
             expected_existing[point_id] = fingerprint
-            store.update_point_payload(point_id, payload)
+            store.update_point_payload(owner_id, point_id, payload)
         else:
             pending.append((chunk, point_id, fingerprint))
     if expected_existing:
@@ -402,9 +402,9 @@ def upsert_vectors(
         vector_values = [[float(value) for value in item["vector"]] for item in vectors]
         store = get_qdrant_store()
         point_ids = [point_id for _chunk, point_id, _fingerprint in point_records]
-        active_flags = store.existing_active_flags(point_ids)
-        store.upsert_chunks(point_payloads, vector_values, active_flags=active_flags)
-        persisted = store.existing_fingerprints(point_ids)
+        active_flags = store.existing_active_flags(owner_id, point_ids)
+        store.upsert_chunks(owner_id, point_payloads, vector_values, active_flags=active_flags)
+        persisted = store.existing_fingerprints(owner_id, point_ids)
         expected = {point_id: fingerprint for _, point_id, fingerprint in point_records}
         if not verify_point_batch(persisted, expected):
             raise RuntimeError("Qdrant did not return the expected vector batch after upsert")
@@ -461,14 +461,14 @@ def cleanup_old_version(self: Task, user_id: str, file_id: str, version: int) ->
         }
         if any(not value for value in expected.values()):
             raise RuntimeError("Embedding fingerprints are missing from PostgreSQL chunk records")
-        stored = store.existing_fingerprints(list(expected))
+        stored = store.existing_fingerprints(owner_id, list(expected))
         if not verify_point_batch(stored, expected):
             raise RuntimeError("Replacement vector set is incomplete; retaining prior active index")
 
         # Keep the file row lock through Qdrant activation and the canonical PG
         # pointer update. Old points are not removed until this replacement is
         # complete and verified.
-        store.activate_version(record_id, version, list(expected))
+        store.activate_version(owner_id, record_id, version, list(expected))
         metadata = dict(file.extra_metadata or {})
         metadata["active_content_version"] = version
         metadata["active_embedding_model"] = service.fingerprint
@@ -486,7 +486,7 @@ def cleanup_old_version(self: Task, user_id: str, file_id: str, version: int) ->
         session.commit()
 
     # Deleting is deliberately after replacement verification and activation.
-    store.delete_obsolete_file_points(record_id, list(expected))
+    store.delete_obsolete_file_points(owner_id, record_id, list(expected))
     with SessionLocal() as session:
         session.execute(
             delete(DocumentChunk).where(
@@ -562,7 +562,7 @@ def delete_file(self: Task, user_id: str, root_id: str, path: str) -> dict[str, 
         if file is None or file.indexing_status == "deleted":
             return {"status": "already_deleted", "path": canonical_path}
         file_id = file.id
-        get_qdrant_store().delete_file_points(file_id)
+        get_qdrant_store().delete_file_points(owner_id, file_id)
         file.indexing_status = "deleted"
         session.execute(delete(DocumentChunk).where(DocumentChunk.file_id == file_id))
         _cancel_file_jobs(session, owner_id, file_id, "File was deleted")
@@ -636,7 +636,7 @@ def reconcile_root(self: Task, user_id: str, root_id: str) -> dict[str, Any]:
                 process_requests.append((file.id, version))
                 queued_versions.add((file.id, version))
         for removed_file_id in removed_file_ids:
-            get_qdrant_store().delete_file_points(removed_file_id)
+            get_qdrant_store().delete_file_points(owner_id, removed_file_id)
         session.commit()
     for file_id, version in process_requests:
         process_file.apply_async(
