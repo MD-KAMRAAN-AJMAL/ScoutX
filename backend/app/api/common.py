@@ -28,14 +28,10 @@ class ErrorResponse(APIModel):
     error: ErrorBody
 
 
-LOCAL_USER_ID = uuid.UUID(
-    os.getenv("SCOUTX_LOCAL_USER_ID", "00000000-0000-4000-8000-000000000001")
-)
+LOCAL_USER_ID = uuid.UUID(os.getenv("SCOUTX_LOCAL_USER_ID", "00000000-0000-4000-8000-000000000001"))
 
 
-def get_local_user_id(
-    request: Request, session: Session = Depends(get_db)
-) -> uuid.UUID:
+def get_local_user_id(request: Request, session: Session = Depends(get_db)) -> uuid.UUID:
     """Use middleware identity, with a development-only local workspace fallback."""
     authenticated_id = getattr(request.state, "user_id", None)
     if authenticated_id is not None:
@@ -44,13 +40,19 @@ def get_local_user_id(
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=401,
-                detail={"code": "invalid_user_context", "message": "The authenticated user context is invalid."},
+                detail={
+                    "code": "invalid_user_context",
+                    "message": "The authenticated user context is invalid.",
+                },
             ) from exc
 
     if get_settings().environment.lower() != "development":
         raise HTTPException(
             status_code=401,
-            detail={"code": "authentication_required", "message": "An authenticated user context is required."},
+            detail={
+                "code": "authentication_required",
+                "message": "An authenticated user context is required.",
+            },
         )
 
     repository = UserRepository(session)
