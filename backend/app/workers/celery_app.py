@@ -41,4 +41,3 @@ celery_app.conf.update(
 def reject_root_worker(**_: object) -> None:
     """Prevent a Celery worker from running with privileges that bypass file ACLs."""
     ensure_not_root()
-
