@@ -7,16 +7,32 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.common import APIModel, ErrorResponse, get_local_user_id
 from app.api.files import FileStatusCounts, normalize_file_status
 from app.database.engine import get_db
-from app.database.models import File
-from app.database.repositories import IndexRootRepository
+from app.database.models import File, IndexJob
+from app.database.repositories import IndexJobRepository, IndexRootRepository
 
 router = APIRouter(prefix="/index", tags=["indexing"])
+
+
+class IndexJobProgress(APIModel):
+    id: uuid.UUID
+    job_type: str
+    status: str
+    root_id: uuid.UUID | None = None
+    file_id: uuid.UUID | None = None
+    attempts: int = Field(ge=0)
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    stage: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class IndexStatusResponse(APIModel):
@@ -27,6 +43,8 @@ class IndexStatusResponse(APIModel):
     status_counts: FileStatusCounts
     roots_registered: int
     last_reconciled_at: datetime | None = None
+    recent_jobs: list[IndexJobProgress] = Field(default_factory=list)
+    recent_job_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ReconcileRequest(APIModel):
@@ -59,6 +77,43 @@ STATUS_KEYS = (
 
 def _api_status(db_status: str, metadata: dict) -> str:
     return normalize_file_status(db_status, metadata)
+
+
+def _job_progress(job: IndexJob) -> IndexJobProgress:
+    payload = job.payload
+    payload = payload if isinstance(payload, dict) else {}
+    raw_percent = payload.get("progress_percent")
+    progress_percent = (
+        raw_percent
+        if isinstance(raw_percent, int)
+        and not isinstance(raw_percent, bool)
+        and 0 <= raw_percent <= 100
+        else None
+    )
+    if job.status == "succeeded":
+        progress_percent = 100
+    raw_stage = payload.get("stage")
+    return IndexJobProgress(
+        id=job.id,
+        job_type=job.job_type,
+        status=job.status,
+        root_id=job.root_id,
+        file_id=job.file_id,
+        attempts=job.attempts,
+        progress_percent=progress_percent,
+        stage=raw_stage if isinstance(raw_stage, str) else None,
+        error_message=job.error_message[:1000] if job.error_message else None,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+    )
+
+
+def _dispatch_celery_reconciliation(user_id: uuid.UUID, root_id: uuid.UUID) -> str | None:
+    """Publish through Person A's existing reconcile task and Redis broker."""
+    from app.workers.tasks import reconcile_root
+
+    return reconcile_root.delay(str(user_id), str(root_id)).id
 
 
 @router.get(
@@ -95,6 +150,11 @@ def indexing_status(
         (root.last_reconciled_at for root in roots if root.last_reconciled_at is not None),
         default=None,
     )
+    jobs = IndexJobRepository(session).list_for_user(user_id, limit=100)
+    job_counts = {status: 0 for status in ("queued", "running", "succeeded", "failed", "cancelled")}
+    for job in jobs:
+        if job.status in job_counts:
+            job_counts[job.status] += 1
     return IndexStatusResponse(
         state=state,
         files_discovered=sum(counts.values()) - counts["deleted"],
@@ -103,6 +163,8 @@ def indexing_status(
         status_counts=FileStatusCounts(**counts),
         roots_registered=sum(root.is_enabled for root in roots),
         last_reconciled_at=last_reconciled,
+        recent_jobs=[_job_progress(job) for job in jobs[:10]],
+        recent_job_counts=job_counts,
     )
 
 
@@ -156,16 +218,10 @@ def reconcile(
         )
 
     dispatcher: ReconciliationDispatcher | None = getattr(
-        request.app.state, "reconciliation_dispatcher", None
+        request.app.state, "reconciliation_dispatcher", _dispatch_celery_reconciliation
     )
     if dispatcher is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "indexing_service_unavailable",
-                "message": "The filesystem indexing worker is not connected yet.",
-            },
-        )
+        raise HTTPException(status_code=503, detail={"code": "indexing_service_unavailable", "message": "The filesystem indexing worker is not connected yet."})
 
     try:
         task_ids = [dispatcher(user_id, root.id) for root in roots]

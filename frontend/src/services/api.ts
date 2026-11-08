@@ -62,6 +62,23 @@ export interface IndexStatus {
   status_counts: Record<FileRecord['indexing_status'], number>
   roots_registered: number
   last_reconciled_at?: string | null
+  recent_jobs?: IndexJobProgress[]
+  recent_job_counts?: Record<'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled', number>
+}
+
+export interface IndexJobProgress {
+  id: string
+  job_type: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  root_id?: string | null
+  file_id?: string | null
+  attempts: number
+  progress_percent?: number | null
+  stage?: string | null
+  error_message?: string | null
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
 }
 
 export interface ReconcileResponse {

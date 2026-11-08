@@ -44,6 +44,18 @@ export function IndexingStatusCard({ status, unavailable = false }: IndexingStat
       {status && <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-[#edf0ee] pt-4 sm:grid-cols-4">
         {statusLabels.map(([key, label, color]) => <div key={key} className="flex justify-between gap-2 text-xs"><span className={color}>{label}</span><span className="font-medium text-[#526057]">{status.status_counts[key].toLocaleString()}</span></div>)}
       </div>}
+      {!!status?.recent_jobs?.length && <div className="mt-4 border-t border-[#edf0ee] pt-4">
+        <p className="mb-2 text-xs font-semibold text-[#68766d]">Recent indexing jobs</p>
+        <ul className="space-y-2">
+          {status.recent_jobs?.slice(0, 3).map((job) => <li key={job.id} className="rounded-lg bg-[#f7f9f7] px-3 py-2">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="truncate text-[#536158]">{job.stage ?? job.job_type.replaceAll('_', ' ')}</span>
+              <span className={job.status === 'failed' ? 'shrink-0 text-[#a44f40]' : job.status === 'running' ? 'shrink-0 text-[#496b9d]' : 'shrink-0 text-[#75827a]'}>{job.status}{job.progress_percent != null ? ` · ${job.progress_percent}%` : ''}</span>
+            </div>
+            {job.error_message && <p className="mt-1 line-clamp-2 text-xs text-[#a44f40]">{job.error_message}</p>}
+          </li>)}
+        </ul>
+      </div>}
     </section>
   )
 }
