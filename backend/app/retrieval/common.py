@@ -102,6 +102,7 @@ class MetadataSearchInput(SearchInput):
     modified_after: datetime | None = None
     modified_before: datetime | None = None
     filename_contains: str | None = Field(default=None, max_length=1024)
+    path_contains: str | None = Field(default=None, max_length=1024)
 
     @field_validator("modified_before")
     @classmethod
