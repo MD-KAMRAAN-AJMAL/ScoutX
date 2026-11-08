@@ -6,8 +6,7 @@ import os
 import stat
 import uuid
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -369,7 +368,9 @@ class FileScanner:
                 "filesystem_inode": getattr(info, "st_ino", None),
             }
 
-    def _configured_exclusions(self, root: IndexRoot | None = None) -> tuple[str | os.PathLike[str], ...]:
+    def _configured_exclusions(
+        self, root: IndexRoot | None = None
+    ) -> tuple[str | os.PathLike[str], ...]:
         settings_paths = get_settings().excluded_paths
         root_paths = (root.settings or {}).get("excluded_paths", []) if root is not None else []
         return (*settings_paths, *root_paths, *self.excluded_paths)

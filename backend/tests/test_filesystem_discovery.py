@@ -439,6 +439,16 @@ def test_delete_task_marks_file_deleted_idempotently(
     )
     session = FakeSession(roots=[root], files=[file])
     monkeypatch.setattr("app.workers.tasks.SessionLocal", lambda: session)
+
+    class FakeVectorStore:
+        def __init__(self) -> None:
+            self.deleted_file_ids: list[uuid.UUID] = []
+
+        def delete_file_points(self, file_id: uuid.UUID) -> None:
+            self.deleted_file_ids.append(file_id)
+
+    vector_store = FakeVectorStore()
+    monkeypatch.setattr("app.workers.tasks.get_qdrant_store", lambda: vector_store)
     from app.workers.tasks import delete_file
 
     first = delete_file.run(str(user_id), str(root.id), str(path))
@@ -447,6 +457,7 @@ def test_delete_task_marks_file_deleted_idempotently(
     assert second["status"] == "already_deleted"
     assert file.indexing_status == "deleted"
     assert session.committed is True
+    assert vector_store.deleted_file_ids == [file.id]
 
 
 def test_delete_task_preserves_rows_when_external_root_is_unavailable(

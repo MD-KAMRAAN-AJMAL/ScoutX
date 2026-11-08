@@ -17,7 +17,9 @@ class FileDetector:
 
     def __init__(self, sample_size: int = MAGIC_SAMPLE_BYTES) -> None:
         if sample_size < 2048:
-            raise ValueError("sample_size should be at least 2048 bytes for accurate libmagic results")
+            raise ValueError(
+                "sample_size should be at least 2048 bytes for accurate libmagic results"
+            )
         self.sample_size = sample_size
 
     def detect(self, path: str | os.PathLike[str]) -> str:

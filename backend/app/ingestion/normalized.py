@@ -42,9 +42,17 @@ class ExtractedBlock(BaseModel):
 
     @model_validator(mode="after")
     def validate_ranges(self) -> ExtractedBlock:
-        if self.line_start is not None and self.line_end is not None and self.line_end < self.line_start:
+        if (
+            self.line_start is not None
+            and self.line_end is not None
+            and self.line_end < self.line_start
+        ):
             raise ValueError("line_end must not precede line_start")
-        if self.start_time_ms is not None and self.end_time_ms is not None and self.end_time_ms < self.start_time_ms:
+        if (
+            self.start_time_ms is not None
+            and self.end_time_ms is not None
+            and self.end_time_ms < self.start_time_ms
+        ):
             raise ValueError("end_time_ms must not precede start_time_ms")
         return self
 

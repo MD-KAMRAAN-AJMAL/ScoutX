@@ -121,7 +121,9 @@ def fingerprint_file(
     raise last_error or FileChangedDuringHashing(f"Could not hash stable file: {file_path}")
 
 
-def content_version(previous_hash: str | None, current_hash: str, previous_version: int | None) -> int:
+def content_version(
+    previous_hash: str | None, current_hash: str, previous_version: int | None
+) -> int:
     """Keep the version stable for identical bytes, increment it for content changes."""
     if previous_version is None:
         return 1
