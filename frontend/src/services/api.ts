@@ -8,7 +8,8 @@ export interface APIError {
 
 export type FileStatus = 'pending' | 'processing' | 'indexed' | 'partial' | 'failed' | 'unsupported' | 'deleted'
 export type SearchMode = 'auto' | 'keyword' | 'semantic' | 'hybrid'
-export type FeedbackAction = 'opened' | 'selected' | 'relevant' | 'not_relevant' | 'helpful' | 'not_helpful' | 'dismissed'
+export type FeedbackAction = 'opened' | 'selected' | 'relevant' | 'not_relevant' | 'helpful' | 'not_helpful' | 'useful' | 'not_useful' | 'dismissed'
+export type RecommendationCategory = 'recommended_for_you' | 'recently_accessed' | 'continue_working' | 'frequently_used' | 'related' | 'recently_indexed'
 
 export interface SearchRequest {
   query: string
@@ -61,6 +62,7 @@ export interface FileRecommendation {
   score: number
   scoring_method: string
   retrieval_sources: string[]
+  personalization_reasons?: string[]
   supporting_chunks: SupportingChunk[]
 }
 
@@ -115,7 +117,61 @@ export interface SearchResponse {
   warnings: string[]
   reranking_status: string
   generation_status: string
+  personalization_status: string
   latency_ms: Record<string, number>
+}
+
+export interface RecommendationItem {
+  id: string
+  file_id: string
+  filename: string
+  path: string
+  extension?: string | null
+  mime_type?: string | null
+  modified_at?: string | null
+  score: number
+  category: RecommendationCategory
+  reason: string
+}
+
+export interface RecommendationListResponse {
+  items: RecommendationItem[]
+  category: RecommendationCategory
+  limit: number
+}
+
+export interface PersonalizationPreferences {
+  personalization_enabled: boolean
+  preferred_extensions: string[]
+  excluded_extensions: string[]
+  preferred_root_ids: string[]
+  excluded_root_ids: string[]
+  recommendation_limit: number
+}
+
+export interface PersonalizationProfile {
+  status: 'available' | 'cold_start' | 'disabled'
+  personalization_enabled: boolean
+  preferred_extensions: string[]
+  frequent_roots: Array<{ id: string; name: string }>
+  recent_file_count: number
+  feedback_signal_count: number
+}
+
+export interface ActivityItem {
+  id: string
+  event_type: string
+  file_id?: string | null
+  filename?: string | null
+  extension?: string | null
+  created_at: string
+}
+
+export interface ActivityListResponse {
+  items: ActivityItem[]
+  limit: number
+  offset: number
+  total: number
 }
 
 export interface FileRecord {
@@ -307,4 +363,22 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_id: fileId, action, query, agent_run_id: agentRunId }),
     }),
+  recommendations: (category: RecommendationCategory = 'recommended_for_you', limit = 12, extension?: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ category, limit: String(limit) })
+    if (extension) params.set('extension', extension)
+    return request<RecommendationListResponse>(`/recommendations?${params.toString()}`, { signal })
+  },
+  personalizationProfile: (signal?: AbortSignal) => request<PersonalizationProfile>('/personalization/profile', { signal }),
+  personalizationPreferences: (signal?: AbortSignal) => request<PersonalizationPreferences>('/personalization/preferences', { signal }),
+  updatePersonalizationPreferences: (preferences: PersonalizationPreferences, signal?: AbortSignal) => request<PersonalizationPreferences>('/personalization/preferences', {
+    method: 'PUT', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preferences),
+  }),
+  activity: (options: { limit?: number; offset?: number } = {}, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 20), offset: String(options.offset ?? 0) })
+    return request<ActivityListResponse>(`/activity?${params.toString()}`, { signal })
+  },
+  clearActivity: (signal?: AbortSignal) => request<{ deleted_activity_events: number; deleted_feedback_items: number }>('/activity', { method: 'DELETE', signal }),
+  resetPersonalization: (clearActivityHistory = false, signal?: AbortSignal) => request<{ reset: boolean; activity_history_cleared: boolean }>('/personalization/reset', {
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear_activity_history: clearActivityHistory }),
+  }),
 }

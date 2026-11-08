@@ -14,6 +14,7 @@ vi.mock('../services/api', async (importOriginal) => {
       fileDetail: vi.fn(),
       feedback: vi.fn(),
       roots: vi.fn(),
+      recommendations: vi.fn(),
     },
   }
 })
@@ -75,6 +76,7 @@ const response: SearchResponse = {
   warnings: [],
   reranking_status: 'qwen3',
   generation_status: 'succeeded',
+    personalization_status: 'cold_start',
   latency_ms: { retrieval: 12, reranking: 4, generation: 20 },
 }
 
@@ -96,6 +98,7 @@ describe('SearchPage', () => {
     vi.mocked(api.feedback).mockResolvedValue({ accepted: true })
     vi.mocked(api.fileDetail).mockResolvedValue(detail)
     vi.mocked(api.roots).mockResolvedValue({ items: [] })
+    vi.mocked(api.recommendations).mockResolvedValue({ items: [], category: 'recommended_for_you', limit: 8 })
   })
 
   it('submits a natural-language query and renders ranked files and answer', async () => {
