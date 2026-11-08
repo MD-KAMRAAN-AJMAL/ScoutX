@@ -14,6 +14,7 @@ from app.api.common import APIModel, ErrorResponse, get_local_user_id
 from app.database.engine import get_db
 from app.database.models import AgentRun
 from app.database.repositories import AgentRunRepository
+from app.reranking.schemas import AnswerCitation, FileRecommendation
 from app.retrieval.common import SearchCandidate
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -25,6 +26,7 @@ class SearchRequest(APIModel):
     limit: int = Field(default=20, ge=1, le=100)
     mode: Literal["auto", "keyword", "semantic", "hybrid"] = "auto"
     conversation_id: UUID | None = None
+    generate_answer: bool = True
 
     @field_validator("query")
     @classmethod
@@ -61,6 +63,11 @@ class SearchResponse(APIModel):
     retry_count: int
     execution_trace: list[str]
     warnings: list[str] = Field(default_factory=list)
+    files: list[FileRecommendation] = Field(default_factory=list)
+    citations: list[AnswerCitation] = Field(default_factory=list)
+    reranking_status: str = "unknown"
+    generation_status: str = "unknown"
+    latency_ms: dict[str, float] = Field(default_factory=dict)
 
 
 @router.post("", response_model=SearchResponse, responses={503: {"model": ErrorResponse}})
@@ -79,6 +86,7 @@ async def search_files(
             run_id=run.id,
             mode=request.mode,
             conversation_id=conversation_id,
+            generate_answer=request.generate_answer,
         )
     except Exception as exc:
         logger.exception("Search supervisor failed for run %s", run.id)
@@ -125,6 +133,11 @@ async def search_files(
         retry_count=state.get("retry_count", 0),
         execution_trace=state.get("execution_trace", []),
         warnings=state.get("errors", []),
+        files=state.get("files", []),
+        citations=state.get("citations", []),
+        reranking_status=state.get("reranking_status", "unknown"),
+        generation_status=state.get("generation_status", "unknown"),
+        latency_ms=state.get("latency_ms", {}),
     )
 
 

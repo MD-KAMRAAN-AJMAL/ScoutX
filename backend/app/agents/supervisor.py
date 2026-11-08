@@ -65,6 +65,9 @@ async def run_supervisor(
     retrieval_tools=None,
     context_loader=None,
     run_recorder=None,
+    reranker=None,
+    answer_generator=None,
+    generate_answer: bool = True,
 ) -> dict[str, Any]:
     graph_args = {
         "user_id": user_id,
@@ -75,6 +78,9 @@ async def run_supervisor(
         "retrieval_tools": retrieval_tools,
         "context_loader": context_loader,
         "run_recorder": run_recorder,
+        "reranker": reranker,
+        "answer_generator": answer_generator,
+        "generate_answer": generate_answer,
     }
     state = {
         "original_query": query,
@@ -88,6 +94,8 @@ async def run_supervisor(
         "results": [],
         "errors": [],
         "execution_trace": [],
+        "generate_answer": generate_answer,
+        "latency_ms": {},
     }
     config = {
         "configurable": {"thread_id": f"{user_id}:{conversation_id or run_id}"},

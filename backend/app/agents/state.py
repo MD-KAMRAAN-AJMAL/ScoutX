@@ -18,6 +18,13 @@ class AgentState(TypedDict, total=False):
     max_retries: int
     evaluation: dict[str, Any]
     context: list[dict[str, Any]]
+    reranked_candidates: list[dict[str, Any]]
+    files: list[dict[str, Any]]
+    citations: list[dict[str, Any]]
+    reranking_status: str
+    generation_status: str
+    generate_answer: bool
+    latency_ms: dict[str, float]
     answer: str | None
     errors: list[str]
     execution_trace: list[str]
