@@ -37,6 +37,32 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(
         default=32, ge=1, le=1024, validation_alias="SCOUTX_EMBEDDING_BATCH_SIZE"
     )
+    reranker_enabled: bool = Field(default=True, validation_alias="SCOUTX_RERANKER_ENABLED")
+    reranker_model: str = Field(
+        default="Qwen/Qwen3-Reranker-0.6B", validation_alias="SCOUTX_RERANKER_MODEL"
+    )
+    reranker_local_files_only: bool = Field(
+        default=False, validation_alias="SCOUTX_RERANKER_LOCAL_FILES_ONLY"
+    )
+    reranker_candidate_limit: int = Field(
+        default=50, ge=1, le=500, validation_alias="SCOUTX_RERANKER_CANDIDATE_LIMIT"
+    )
+    reranker_top_n: int = Field(default=20, ge=1, le=100, validation_alias="SCOUTX_RERANKER_TOP_N")
+    reranker_batch_size: int = Field(
+        default=8, ge=1, le=128, validation_alias="SCOUTX_RERANKER_BATCH_SIZE"
+    )
+    reranker_max_length: int = Field(
+        default=2048, ge=128, le=8192, validation_alias="SCOUTX_RERANKER_MAX_LENGTH"
+    )
+    reranker_fallback_enabled: bool = Field(
+        default=True, validation_alias="SCOUTX_RERANKER_FALLBACK_ENABLED"
+    )
+    rag_context_token_budget: int = Field(
+        default=6000, ge=256, le=32000, validation_alias="SCOUTX_RAG_CONTEXT_TOKEN_BUDGET"
+    )
+    rag_min_confidence: float = Field(
+        default=0.08, ge=0.0, le=1.0, validation_alias="SCOUTX_RAG_MIN_CONFIDENCE"
+    )
     excluded_paths: list[str] = Field(default_factory=list)
     sql_echo: bool = False
     db_pool_size: int = Field(default=5, ge=1, le=100)
