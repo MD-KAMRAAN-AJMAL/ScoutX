@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
 from qdrant_client import QdrantClient, models
 
 from app.retrieval.code import search_code
@@ -14,6 +15,14 @@ from app.retrieval.media import search_media
 from app.retrieval.metadata import search_metadata
 from app.retrieval.semantic import search_semantic
 from app.vectorstore.qdrant_client import QdrantStore
+
+
+@pytest.fixture(autouse=True)
+def readable_fixture_files(monkeypatch):
+    from app.retrieval import common
+
+    monkeypatch.setattr(common, "require_readable_file", lambda path: path)
+
 
 USER = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -116,6 +125,18 @@ def test_standard_candidate_resolution_preserves_source_references():
     assert result[0].retrieval_method == "semantic"
 
 
+def test_candidate_contains_postgres_source_references():
+    file, chunk = record("paper.pdf", ".pdf", "Finding")
+    chunk.chunk_metadata["source_references"] = [{"page_number": 1, "section_title": "Finding"}]
+    session = FakeSession([(chunk, file)])
+
+    result = point_candidates(
+        session, USER, [point(chunk.qdrant_point_id)], retrieval_method="semantic"
+    )
+
+    assert result[0].source_references == [{"page_number": 1, "section_title": "Finding"}]
+
+
 def test_exact_and_fuzzy_filename_search_return_candidates():
     file, chunk = record("main.py", ".py", "def main(): pass", modality="code", language="python")
     session = FakeSession([(chunk, file)])
@@ -153,6 +174,7 @@ def test_keyword_search_uses_user_scoped_qdrant_text_index():
     assert results[0].retrieval_method == "keyword"
     assert store.calls[0]["using"] == "content"
     assert store.calls[0]["query_filter"].must[0].match.value == str(USER)
+    assert store.calls[0]["query_filter"].must[1].key == "is_active"
 
 
 def test_dense_semantic_search_uses_existing_embedding_and_vector_interface():
@@ -248,6 +270,67 @@ def test_media_searches_image_ocr_chunks():
     assert results[0].file_name == "diagram.png"
     assert results[0].modality == "image"
     assert store.calls[0]["query_filter"].must[2].match.any == ["image"]
+
+
+def test_search_inputs_reject_invalid_limits_and_invalid_media_modes():
+    from pydantic import ValidationError
+
+    from app.retrieval.common import QuerySearchInput
+
+    session = FakeSession([])
+    with pytest.raises(ValueError):
+        search_exact_filename(session, USER, "main.py", limit=0)
+    with pytest.raises(ValueError):
+        search_keyword(session, USER, "keyword", limit=1001, store=FakeStore([]))
+    with pytest.raises(ValueError):
+        search_media(session, USER, "media", mode="unsupported", store=FakeStore([]))
+    with pytest.raises(ValidationError):
+        QuerySearchInput.model_validate({"query": "text", "user_id": str(USER)})
+
+
+def test_tool_argument_schema_does_not_expose_authenticated_user_id():
+    from app.retrieval.common import QuerySearchInput
+
+    assert "user_id" not in QuerySearchInput.model_json_schema()["properties"]
+
+
+def test_empty_authorized_file_scope_cannot_remove_qdrant_scope():
+    from app.retrieval.common import qdrant_filter
+
+    query_filter = qdrant_filter(USER, file_ids=[])
+    conditions = {condition.key: condition for condition in query_filter.must}
+
+    assert conditions["user_id"].match.value == str(USER)
+    assert conditions["is_active"].match.value is True
+    assert conditions["file_id"].match.any == [str(UUID(int=0))]
+
+
+def test_unreadable_candidates_are_removed_from_every_strategy(monkeypatch):
+    from app.retrieval import common
+
+    monkeypatch.setattr(
+        common,
+        "require_readable_file",
+        lambda _: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    file, chunk = record("secret.pdf", ".pdf", "private content")
+    session = FakeSession([(chunk, file)])
+
+    assert (
+        point_candidates(session, USER, [point(chunk.qdrant_point_id)], retrieval_method="keyword")
+        == []
+    )
+
+
+def test_external_search_failures_use_stable_backend_error():
+    from app.retrieval.common import RetrievalBackendError
+
+    class UnavailableStore(FakeStore):
+        def query_points(self, **kwargs):
+            raise RuntimeError("private backend detail")
+
+    with pytest.raises(RetrievalBackendError, match="search_keyword backend failed"):
+        search_keyword(FakeSession([]), USER, "query", store=UnavailableStore([]))
 
 
 def test_native_retrieval_on_multimodal_local_qdrant_collection():
