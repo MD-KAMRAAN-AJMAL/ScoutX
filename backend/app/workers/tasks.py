@@ -19,7 +19,7 @@ from celery import Task
 from kombu.exceptions import OperationalError as BrokerOperationalError
 from opentelemetry import trace
 from qdrant_client.http.exceptions import ApiException, ResponseHandlingException
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -678,6 +678,51 @@ def reconcile_root(self: Task, user_id: str, root_id: str) -> dict[str, Any]:
             file.indexing_status = "queued"
             _ensure_process_job(session, file, user_id=owner_id)
             process_requests.append((file.id, file.version))
+        # Retry terminal failures caused by the two repaired pipeline defects:
+        # PaddleOCR was missing on earlier images, and an old worker attempted
+        # to synchronously wait on a Celery subtask. Retry each affected file
+        # version once when its root is reconciled after deploying the fixes.
+        repaired_failures = session.scalars(
+            select(IndexJob)
+            .where(
+                IndexJob.user_id == owner_id,
+                IndexJob.root_id == registered_root_id,
+                IndexJob.job_type == "process_file",
+                IndexJob.status == "failed",
+                or_(
+                    IndexJob.error_message.ilike("%paddlepaddle%"),
+                    IndexJob.error_message.ilike("%Never call result.get() within a task%"),
+                ),
+            )
+            .order_by(IndexJob.created_at)
+        ).all()
+        retried_versions: set[tuple[uuid.UUID, int]] = set(process_requests)
+        for failed_job in repaired_failures:
+            file = session.get(File, failed_job.file_id) if failed_job.file_id else None
+            if file is None or file.indexing_status in {"deleted", "queued", "processing"}:
+                continue
+            raw_version = failed_job.payload.get("file_version")
+            if not isinstance(raw_version, int) or raw_version != file.version:
+                continue
+            key = (file.id, raw_version)
+            if key in retried_versions:
+                continue
+            newer_job_exists = session.scalar(
+                select(IndexJob.id)
+                .where(
+                    IndexJob.user_id == owner_id,
+                    IndexJob.file_id == file.id,
+                    IndexJob.job_type == "process_file",
+                    IndexJob.created_at > failed_job.created_at,
+                )
+                .limit(1)
+            )
+            if newer_job_exists is not None:
+                continue
+            file.indexing_status = "queued"
+            _ensure_process_job(session, file, user_id=owner_id, force=True)
+            process_requests.append(key)
+            retried_versions.add(key)
         for path in report.missing_paths:
             file = session.scalar(
                 select(File)
