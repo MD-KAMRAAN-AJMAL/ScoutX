@@ -22,6 +22,7 @@ def search_metadata(
     modified_after: datetime | None = None,
     modified_before: datetime | None = None,
     filename_contains: str | None = None,
+    path_contains: str | None = None,
     limit: int = 100,
 ) -> list[SearchCandidate]:
     """Search file attributes and return current chunks as provenance-bearing results."""
@@ -51,6 +52,8 @@ def search_metadata(
         stmt = stmt.where(File.modified_at <= modified_before)
     if filename_contains:
         stmt = stmt.where(File.filename.ilike(f"%{filename_contains.strip()}%"))
+    if path_contains:
+        stmt = stmt.where(File.canonical_path.ilike(f"%{path_contains.strip()}%"))
     rows = session.execute(
         stmt.order_by(
             File.modified_at.desc().nullslast(), File.canonical_path, DocumentChunk.chunk_index
