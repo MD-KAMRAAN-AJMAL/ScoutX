@@ -86,6 +86,16 @@ class FakeRootRepository:
         return items
 
 
+class FakeIndexJobRepository:
+    jobs: list[Any] = []
+
+    def __init__(self, _: FakeSession) -> None:
+        pass
+
+    def list_for_user(self, _: uuid.UUID, *, limit: int = 100) -> list[Any]:
+        return self.jobs[:limit]
+
+
 @pytest.fixture(autouse=True)
 def api_dependencies(monkeypatch: pytest.MonkeyPatch) -> Any:
     session = FakeSession()
@@ -98,8 +108,10 @@ def api_dependencies(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(roots_api, "IndexRootRepository", FakeRootRepository)
     monkeypatch.setattr(files_api, "IndexRootRepository", FakeRootRepository)
     monkeypatch.setattr(indexing_api, "IndexRootRepository", FakeRootRepository)
+    monkeypatch.setattr(indexing_api, "IndexJobRepository", FakeIndexJobRepository)
     FakeRootRepository.roots = []
     FakeRootRepository.requested = []
+    FakeIndexJobRepository.jobs = []
     app.state.reconciliation_dispatcher = None
     yield session
     app.dependency_overrides.clear()
@@ -235,8 +247,39 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
 
 
 def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> None:
+    now = datetime(2026, 11, 8, 9, tzinfo=timezone.utc)
     FakeRootRepository.roots = [
         SimpleNamespace(id=ROOT_ID, user_id=USER_ID, is_enabled=True, last_reconciled_at=None)
+    ]
+    FakeIndexJobRepository.jobs = [
+        SimpleNamespace(
+            id=FILE_ID,
+            user_id=USER_ID,
+            root_id=ROOT_ID,
+            file_id=FILE_ID,
+            job_type="process_file",
+            status="running",
+            attempts=1,
+            payload={"stage": "embedding", "progress_percent": 42},
+            error_message=None,
+            created_at=now,
+            started_at=now,
+            finished_at=None,
+        ),
+        SimpleNamespace(
+            id=uuid.UUID("80eaa197-6bc8-401f-90fa-7b292596fb1a"),
+            user_id=USER_ID,
+            root_id=ROOT_ID,
+            file_id=uuid.UUID("80eaa197-6bc8-401f-90fa-7b292596fb1a"),
+            job_type="process_file",
+            status="failed",
+            attempts=3,
+            payload={"stage": "extract"},
+            error_message="Parser rejected this file",
+            created_at=now,
+            started_at=now,
+            finished_at=now,
+        ),
     ]
     api_dependencies.status_rows = [
         ("queued", {}),
@@ -261,6 +304,11 @@ def test_index_status_maps_database_statuses(api_dependencies: FakeSession) -> N
     }
     assert response.json()["files_indexed"] == 0
     assert response.json()["state"] == "processing"
+    assert response.json()["recent_job_counts"]["running"] == 1
+    assert response.json()["recent_job_counts"]["failed"] == 1
+    assert response.json()["recent_jobs"][0]["stage"] == "embedding"
+    assert response.json()["recent_jobs"][0]["progress_percent"] == 42
+    assert response.json()["recent_jobs"][1]["error_message"] == "Parser rejected this file"
 
 
 def test_reconcile_requires_dispatcher_and_queues_when_configured() -> None:
@@ -279,3 +327,23 @@ def test_reconcile_requires_dispatcher_and_queues_when_configured() -> None:
     queued_all = call("POST", "/api/v1/index/reconcile")
     assert queued_all.status_code == 202
     assert queued_all.json()["root_ids"] == [str(ROOT_ID)]
+
+
+def test_reconcile_uses_existing_celery_task_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeRootRepository.roots = [
+        SimpleNamespace(id=ROOT_ID, user_id=USER_ID, is_enabled=True, last_reconciled_at=None)
+    ]
+    if hasattr(app.state, "reconciliation_dispatcher"):
+        del app.state.reconciliation_dispatcher
+    submitted: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+    def enqueue(user_id: uuid.UUID, root_id: uuid.UUID) -> str:
+        submitted.append((user_id, root_id))
+        return "celery-task-123"
+
+    monkeypatch.setattr(indexing_api, "_dispatch_celery_reconciliation", enqueue)
+    response = call("POST", "/api/v1/index/reconcile", json={"root_id": str(ROOT_ID)})
+
+    assert response.status_code == 202
+    assert submitted == [(USER_ID, ROOT_ID)]
+    assert response.json()["task_ids"] == ["celery-task-123"]
