@@ -6,10 +6,19 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.retrieval.common import SearchCandidate, deduplicate, point_candidates, qdrant_filter
+from app.retrieval.common import (
+    QuerySearchInput,
+    SearchCandidate,
+    authenticated_user_id,
+    deduplicate,
+    normalize_backend_errors,
+    point_candidates,
+    qdrant_filter,
+)
 from app.vectorstore.qdrant_client import QdrantStore, get_qdrant_store
 
 
+@normalize_backend_errors
 def search_keyword(
     session: Session,
     user_id: UUID,
@@ -22,23 +31,31 @@ def search_keyword(
     store: QdrantStore | None = None,
 ) -> list[SearchCandidate]:
     """Run Qdrant's BM25 full-text scorer over the indexed ``content`` payload."""
-    query = query.strip()
-    if not query:
-        return []
-    if limit < 1:
-        raise ValueError("limit must be positive")
+    args = QuerySearchInput.model_validate(
+        {
+            "query": query,
+            "limit": limit,
+            "extensions": extensions,
+            "modalities": modalities,
+            "languages": languages,
+        }
+    )
+    user_id = authenticated_user_id(user_id)
     store = store or get_qdrant_store()
     store.ensure_ready()
     from qdrant_client import models
 
     response = store.client.query_points(
         collection_name=store.collection_name,
-        query=models.TextQuery(text=models.TextQueryInput(query=query)),
+        query=models.TextQuery(text=models.TextQueryInput(query=args.query)),
         using="content",
         query_filter=qdrant_filter(
-            user_id, extensions=extensions, modalities=modalities, languages=languages
+            user_id,
+            extensions=args.extensions,
+            modalities=args.modalities,
+            languages=args.languages,
         ),
-        limit=limit,
+        limit=args.limit,
         with_payload=True,
         with_vectors=False,
     )

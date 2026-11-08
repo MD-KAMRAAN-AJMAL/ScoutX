@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.embeddings.service import EmbeddingService
 from app.retrieval.common import (
+    HybridSearchInput,
     SearchCandidate,
+    authenticated_user_id,
+    normalize_backend_errors,
     point_candidates,
     qdrant_filter,
     reciprocal_rank_fusion,
@@ -17,6 +20,7 @@ from app.vectorstore.collections import DENSE_VECTOR_NAME
 from app.vectorstore.qdrant_client import QdrantStore, get_qdrant_store
 
 
+@normalize_backend_errors
 def search_hybrid(
     session: Session,
     user_id: UUID,
@@ -31,16 +35,22 @@ def search_hybrid(
     store: QdrantStore | None = None,
 ) -> list[SearchCandidate]:
     """Fuse dense and BM25 rankings natively in Qdrant using reciprocal rank fusion."""
-    query = query.strip()
-    if not query:
-        return []
-    if limit < 1:
-        raise ValueError("limit must be positive")
-    candidates = candidate_limit or max(limit * 4, 40)
-    if candidates < limit:
+    args = HybridSearchInput.model_validate(
+        {
+            "query": query,
+            "limit": limit,
+            "candidate_limit": candidate_limit,
+            "extensions": extensions,
+            "modalities": modalities,
+            "languages": languages,
+        }
+    )
+    user_id = authenticated_user_id(user_id)
+    candidates = args.candidate_limit or min(max(args.limit * 4, 40), 1000)
+    if candidates < args.limit:
         raise ValueError("candidate_limit must be at least limit")
     embedding_service = embedding_service or EmbeddingService()
-    vectors = embedding_service.embed_queries([query])
+    vectors = embedding_service.embed_queries([args.query])
     if len(vectors) != 1:
         raise RuntimeError("Embedding provider returned an invalid query batch")
     store = store or get_qdrant_store()
@@ -48,9 +58,12 @@ def search_hybrid(
     from qdrant_client import models
 
     q_filter = qdrant_filter(
-        user_id, extensions=extensions, modalities=modalities, languages=languages
+        user_id,
+        extensions=args.extensions,
+        modalities=args.modalities,
+        languages=args.languages,
     )
-    text_query = models.TextQuery(text=models.TextQueryInput(query=query))
+    text_query = models.TextQuery(text=models.TextQueryInput(query=args.query))
     response = store.client.query_points(
         collection_name=store.collection_name,
         prefetch=[
@@ -61,7 +74,7 @@ def search_hybrid(
         ],
         query=models.FusionQuery(fusion=models.Fusion.RRF),
         query_filter=q_filter,
-        limit=limit,
+        limit=args.limit,
         with_payload=True,
         with_vectors=False,
     )
