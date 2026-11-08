@@ -7,12 +7,16 @@ invoked with an explicit executable, argument vector, timeout and no shell.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import shutil
 import subprocess
+import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from app.config import get_settings
 
 
 class ParserInputError(ValueError):
@@ -25,6 +29,10 @@ class ParserLimits:
     max_text_bytes: int = 64 * 1024 * 1024
     subprocess_timeout_seconds: int = 300
     max_media_seconds: int = 4 * 60 * 60
+    max_archive_expanded_bytes: int = 1024 * 1024 * 1024
+    max_archive_entries: int = 10000
+    max_archive_member_bytes: int = 256 * 1024 * 1024
+    max_archive_ratio: int = 200
 
 
 DEFAULT_LIMITS = ParserLimits()
@@ -39,17 +47,21 @@ def validate_input(path: str | Path, *, max_bytes: int | None = None) -> Path:
         raise ParserInputError(f"Cannot access parser input: {exc}") from exc
     if candidate.is_symlink() or not candidate.is_file():
         raise ParserInputError("Parser input must be a regular, non-symlink file")
-    limit = DEFAULT_LIMITS.max_file_bytes if max_bytes is None else max_bytes
+    settings = get_settings()
+    limit = settings.parser_max_file_bytes if max_bytes is None else max_bytes
     if info.st_size > limit:
         raise ParserInputError(f"File exceeds parser limit of {limit} bytes")
-    return candidate.resolve(strict=True)
+    resolved = candidate.resolve(strict=True)
+    if zipfile.is_zipfile(resolved):
+        _validate_archive(resolved)
+    return resolved
 
 
 def run_tool(
     executable: str,
     args: Sequence[str],
     *,
-    timeout: int = DEFAULT_LIMITS.subprocess_timeout_seconds,
+    timeout: int | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a known external media tool without a shell or inherited secrets."""
@@ -61,12 +73,44 @@ def run_tool(
         for key, value in os.environ.items()
         if key in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}
     }
+    configured_timeout = timeout or get_settings().parser_subprocess_timeout_seconds
     return subprocess.run(
         [resolved, *map(str, args)],
         check=check,
         capture_output=True,
         text=True,
-        timeout=timeout,
+        timeout=configured_timeout,
         shell=False,
         env=env,
     )
+
+
+def _validate_archive(path: Path) -> None:
+    """Reject path traversal and oversized ZIP containers before parsers unpack them."""
+    limits = DEFAULT_LIMITS
+    expanded = 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if len(entries) > limits.max_archive_entries:
+                raise ParserInputError("Archive contains too many entries")
+            for entry in entries:
+                name = entry.filename.replace("\\", "/")
+                parts = PurePosixPath(name).parts
+                if name.startswith("/") or ntpath.splitdrive(name)[0] or ".." in parts:
+                    raise ParserInputError("Archive contains an unsafe member path")
+                if entry.file_size > limits.max_archive_member_bytes:
+                    raise ParserInputError("Archive member exceeds the extraction limit")
+                expanded += entry.file_size
+                if expanded > limits.max_archive_expanded_bytes:
+                    raise ParserInputError("Archive exceeds the expanded-size limit")
+                compressed = max(1, entry.compress_size)
+                if (
+                    entry.file_size > 1024 * 1024
+                    and entry.file_size / compressed > limits.max_archive_ratio
+                ):
+                    raise ParserInputError("Archive compression ratio exceeds the safety limit")
+    except ParserInputError:
+        raise
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise ParserInputError("Archive is malformed or cannot be inspected") from exc

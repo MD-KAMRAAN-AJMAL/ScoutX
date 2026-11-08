@@ -118,6 +118,60 @@ def require_readable_file(path: str | os.PathLike[str], *, follow_symlinks: bool
     return candidate
 
 
+def resolve_file_under_root(path: str | os.PathLike[str], root: str | os.PathLike[str]) -> Path:
+    """Resolve a registered file without allowing symlink components or root escape.
+
+    This rechecks the filesystem immediately before use. The final file open must
+    still use O_NOFOLLOW where available because filesystem entries can change
+    after this check.
+    """
+    root_path = require_readable_directory(root).resolve(strict=True)
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    if not is_within(candidate, root_path):
+        raise FilesystemPermissionError("File path is outside the authorized directory")
+    relative = candidate.relative_to(root_path)
+    current = root_path
+    try:
+        for component in relative.parts:
+            current = current / component
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise FilesystemPermissionError("Symbolic links are not accessible")
+        resolved = candidate.resolve(strict=True)
+    except FilesystemPermissionError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise FilesystemPermissionError("File is missing or cannot be resolved") from exc
+    if not is_within(resolved, root_path):
+        raise FilesystemPermissionError("Resolved file is outside the authorized directory")
+    return require_readable_file(resolved)
+
+
+def resolve_directory_under_root(
+    path: str | os.PathLike[str], root: str | os.PathLike[str]
+) -> Path:
+    """Resolve a directory under an authorized root without traversing symlinks."""
+    root_path = require_readable_directory(root).resolve(strict=True)
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    if not is_within(candidate, root_path):
+        raise FilesystemPermissionError("Directory path is outside the authorized root")
+    current = root_path
+    try:
+        for component in candidate.relative_to(root_path).parts:
+            current = current / component
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise FilesystemPermissionError("Directory contains an unsafe path component")
+        resolved = candidate.resolve(strict=True)
+    except FilesystemPermissionError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise FilesystemPermissionError("Directory is missing or cannot be resolved") from exc
+    if not is_within(resolved, root_path):
+        raise FilesystemPermissionError("Resolved directory is outside the authorized root")
+    return require_readable_directory(resolved)
+
+
 def is_excluded_path(
     path: str | os.PathLike[str],
     *,

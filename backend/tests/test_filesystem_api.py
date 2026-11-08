@@ -110,7 +110,7 @@ def api_dependencies(monkeypatch: pytest.MonkeyPatch) -> Any:
     app.dependency_overrides[get_local_user_id] = lambda: USER_ID
     monkeypatch.setattr(roots_api, "IndexRootRepository", FakeRootRepository)
     monkeypatch.setattr(files_api, "IndexRootRepository", FakeRootRepository)
-    monkeypatch.setattr(files_api, "require_readable_file", lambda path, **_kwargs: Path(path))
+    monkeypatch.setattr(files_api, "resolve_file_under_root", lambda path, _root: Path(path))
     monkeypatch.setattr(indexing_api, "IndexRootRepository", FakeRootRepository)
     monkeypatch.setattr(indexing_api, "IndexJobRepository", FakeIndexJobRepository)
     FakeRootRepository.roots = []
@@ -219,7 +219,12 @@ def test_delete_root_disables_registration_and_listing_keeps_it(tmp_path: Path) 
 def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
     api_dependencies: FakeSession,
 ) -> None:
-    root = SimpleNamespace(id=ROOT_ID, user_id=USER_ID, is_enabled=True)
+    root = SimpleNamespace(
+        id=ROOT_ID,
+        user_id=USER_ID,
+        is_enabled=True,
+        canonical_path="/authorized",
+    )
     FakeRootRepository.roots = [root]
     api_dependencies.file_rows = [
         SimpleNamespace(
@@ -257,6 +262,14 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
 def test_file_listing_supports_server_side_filters_and_sort_validation(
     api_dependencies: FakeSession,
 ) -> None:
+    FakeRootRepository.roots = [
+        SimpleNamespace(
+            id=ROOT_ID,
+            user_id=USER_ID,
+            is_enabled=True,
+            canonical_path="/authorized",
+        )
+    ]
     api_dependencies.file_rows = [
         SimpleNamespace(
             id=FILE_ID,
@@ -405,6 +418,9 @@ def test_file_detail_is_user_scoped_and_returns_versioned_snippets(
     actual_file = root_path / "notes.txt"
     actual_file.write_text("notes", encoding="utf-8")
     root = SimpleNamespace(canonical_path=str(root_path))
+    FakeRootRepository.roots = [
+        SimpleNamespace(id=ROOT_ID, user_id=USER_ID, is_enabled=True, canonical_path=str(root_path))
+    ]
     file = SimpleNamespace(
         id=FILE_ID,
         user_id=USER_ID,
@@ -436,7 +452,7 @@ def test_file_detail_is_user_scoped_and_returns_versioned_snippets(
         chunk_index=0,
     )
     monkeypatch.setattr(files_api.FileRepository, "get", lambda *_args: file)
-    monkeypatch.setattr(files_api, "require_readable_file", lambda *_args: actual_file)
+    monkeypatch.setattr(files_api, "resolve_file_under_root", lambda *_args: actual_file)
     api_dependencies.file_rows = [chunk]
 
     response = call("GET", f"/api/v1/files/{FILE_ID}")
@@ -451,11 +467,19 @@ def test_file_detail_is_user_scoped_and_returns_versioned_snippets(
 
 
 def test_file_detail_returns_safe_permission_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    file = SimpleNamespace(id=FILE_ID, canonical_path="/private/blocked.txt")
+    file = SimpleNamespace(id=FILE_ID, root_id=ROOT_ID, canonical_path="/private/blocked.txt")
+    FakeRootRepository.roots = [
+        SimpleNamespace(
+            id=ROOT_ID,
+            user_id=USER_ID,
+            is_enabled=True,
+            canonical_path="/private",
+        )
+    ]
     monkeypatch.setattr(files_api.FileRepository, "get", lambda *_args: file)
     monkeypatch.setattr(
         files_api,
-        "require_readable_file",
+        "resolve_file_under_root",
         lambda *_args: (_ for _ in ()).throw(files_api.FilesystemPermissionError("private path")),
     )
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.orm import Session
 
 from app.database.models import (
@@ -133,7 +133,11 @@ class FileRepository:
         _validate_limit(limit)
         return self.session.scalars(
             select(File)
-            .where(File.user_id == user_id, func.lower(File.filename) == filename.casefold())
+            .where(
+                File.user_id == user_id,
+                File.root.has(and_(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))),
+                func.lower(File.filename) == filename.casefold(),
+            )
             .order_by(File.filename, File.canonical_path)
             .limit(limit)
         ).all()
@@ -154,6 +158,7 @@ class FileRepository:
             select(File)
             .where(
                 File.user_id == user_id,
+                File.root.has(and_(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))),
                 File.filename.op("%")(filename),
                 func.similarity(File.filename, filename) >= minimum_similarity,
             )
@@ -177,7 +182,10 @@ class FileRepository:
         _validate_limit(limit)
         if offset < 0:
             raise ValueError("offset must be nonnegative")
-        statement = select(File).where(File.user_id == user_id)
+        statement = select(File).where(
+            File.user_id == user_id,
+            File.root.has(and_(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))),
+        )
         if extensions:
             statement = statement.where(File.extension.in_([item.lower() for item in extensions]))
         if mime_types:
@@ -220,7 +228,11 @@ class FileRepository:
         rows = self.session.execute(
             select(File, IndexRoot)
             .join(IndexRoot, (IndexRoot.id == File.root_id) & (IndexRoot.user_id == File.user_id))
-            .where(File.user_id == user_id, File.id.in_(file_ids))
+            .where(
+                File.user_id == user_id,
+                IndexRoot.is_enabled.is_(True),
+                File.id.in_(file_ids),
+            )
         ).all()
         return [FileSourceRecord(file=file, root=root) for file, root in rows]
 
@@ -303,6 +315,7 @@ class DocumentChunkRepository:
             .where(
                 File.user_id == user_id,
                 File.id == file_id,
+                File.root.has(and_(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))),
                 File.indexing_status == "indexed",
                 DocumentChunk.content_version == File.version,
             )
@@ -331,6 +344,7 @@ class DocumentChunkRepository:
             .join(File, File.id == DocumentChunk.file_id)
             .where(
                 File.user_id == user_id,
+                File.root.has(and_(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))),
                 File.indexing_status == "indexed",
                 DocumentChunk.content_version == File.version,
                 DocumentChunk.qdrant_point_id.in_(point_ids),
@@ -360,6 +374,7 @@ class DocumentChunkRepository:
             .where(
                 DocumentChunk.id == chunk_id,
                 File.user_id == user_id,
+                File.root.has(and_(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))),
                 File.indexing_status == "indexed",
                 DocumentChunk.content_version == File.version,
             )

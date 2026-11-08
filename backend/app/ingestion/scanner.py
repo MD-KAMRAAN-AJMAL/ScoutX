@@ -33,7 +33,8 @@ from app.security.permissions import (
     is_excluded_path,
     is_within,
     require_readable_directory,
-    require_readable_file,
+    resolve_directory_under_root,
+    resolve_file_under_root,
 )
 
 
@@ -118,7 +119,10 @@ class FileScanner:
         configured = self._configured_exclusions()
         stack = [root]
         while stack:
-            directory = stack.pop()
+            try:
+                directory = resolve_directory_under_root(stack.pop(), root)
+            except (OSError, FilesystemPermissionError):
+                continue
             try:
                 with os.scandir(directory) as entries:
                     for entry in entries:
@@ -131,11 +135,11 @@ class FileScanner:
                             info = entry.stat(follow_symlinks=False)
                             if stat.S_ISDIR(info.st_mode):
                                 if os.access(entry_path, os.R_OK | os.X_OK):
-                                    stack.append(entry_path)
+                                    stack.append(resolve_directory_under_root(entry_path, root))
                                 continue
                             if not stat.S_ISREG(info.st_mode) or not os.access(entry_path, os.R_OK):
                                 continue
-                            yield self._snapshot(entry_path)
+                            yield self._snapshot(resolve_file_under_root(entry_path, root))
                         except (OSError, FilesystemPermissionError):
                             continue
             except OSError:
@@ -156,13 +160,13 @@ class FileScanner:
         root = self._get_root(user_id, root_id)
         root_path = require_readable_directory(root.canonical_path).resolve(strict=True)
         self._check_registered_device(root, root_path)
-        target = Path(os.path.abspath(path))
-        if not is_within(target, root_path) or is_excluded_path(
-            target, configured_paths=self._configured_exclusions(root)
+        requested_target = Path(os.path.abspath(path))
+        if not is_within(requested_target, root_path) or is_excluded_path(
+            requested_target, configured_paths=self._configured_exclusions(root)
         ):
             return None, False
         try:
-            require_readable_file(target)
+            target = resolve_file_under_root(requested_target, root_path)
         except (OSError, FilesystemPermissionError):
             return None, False
         prior = self._find_existing(user_id, root_id, target, old_path, root_path)
@@ -223,19 +227,20 @@ class FileScanner:
                                     )
                                     protected_prefixes.append(candidate_text)
                                 else:
-                                    stack.append(candidate)
+                                    stack.append(resolve_directory_under_root(candidate, root_path))
                                 continue
                             if not stat.S_ISREG(info.st_mode):
                                 continue
                             seen.add(candidate_text)
                             report.discovered += 1
+                            safe_candidate = resolve_file_under_root(candidate, root_path)
                             previous = existing_by_path.get(candidate_text)
-                            current_stat = stat_file(candidate)
+                            current_stat = stat_file(safe_candidate)
                             if previous is not None and _metadata_matches(previous, current_stat):
                                 report.unchanged += 1
                                 continue
                             try:
-                                snapshot = self._snapshot(candidate)
+                                snapshot = self._snapshot(safe_candidate)
                             except OSError as exc:
                                 report.issues.append(ScanIssue(candidate_text, str(exc)))
                                 protected_prefixes.append(candidate_text)

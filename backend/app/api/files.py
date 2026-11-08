@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -18,9 +19,12 @@ from app.api.common import APIModel, ErrorResponse, get_local_user_id
 from app.database.engine import get_db
 from app.database.models import DocumentChunk, File, IndexRoot
 from app.database.repositories import FileRepository, IndexRootRepository
-from app.security.permissions import FilesystemPermissionError, require_readable_file
+from app.security.permissions import FilesystemPermissionError, resolve_file_under_root
 
 router = APIRouter(prefix="/files", tags=["files"])
+_ABSOLUTE_PATH_PATTERN = re.compile(
+    r"(?<![\w:/])/(?!/)[^\s,;:'\"<>]+|(?<![\w])[A-Za-z]:\\[^\s,;:'\"<>]+"
+)
 
 FileStatus = Literal[
     "pending",
@@ -129,7 +133,7 @@ def _sanitize_metadata_paths(value: Any, file: File, root: IndexRoot | None) -> 
         if isinstance(root_path, str):
             root_label = getattr(root, "display_name", None) or Path(root_path).name
             result = result.replace(root_path, root_label)
-        return result
+        return _ABSOLUTE_PATH_PATTERN.sub("[local path]", result)
     if isinstance(value, list):
         return [_sanitize_metadata_paths(item, file, root) for item in value]
     if isinstance(value, dict):
@@ -218,6 +222,11 @@ def list_files(
         )
 
     conditions = _file_conditions(user_id, root_id)
+    conditions.append(
+        File.root_id.in_(
+            select(IndexRoot.id).where(IndexRoot.user_id == user_id, IndexRoot.is_enabled.is_(True))
+        )
+    )
     if filename_contains:
         conditions.append(File.filename.ilike(f"%{filename_contains.strip()}%"))
     if modified_after:
@@ -266,8 +275,13 @@ def list_files(
     ).all()
     readable_records = []
     for file in records:
+        root = getattr(file, "root", None) or IndexRootRepository(session).get(
+            user_id, file.root_id
+        )
+        if root is None or not root.is_enabled:
+            continue
         try:
-            require_readable_file(file.canonical_path)
+            resolve_file_under_root(file.canonical_path, root.canonical_path)
         except OSError:
             continue
         readable_records.append(file)
@@ -299,8 +313,14 @@ def file_detail(
             status_code=404,
             detail={"code": "file_not_found", "message": "The file was not found."},
         )
+    root = IndexRootRepository(session).get(user_id, file.root_id)
+    if root is None or not root.is_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "file_not_found", "message": "The file was not found."},
+        )
     try:
-        require_readable_file(file.canonical_path)
+        resolve_file_under_root(file.canonical_path, root.canonical_path)
     except FilesystemPermissionError as exc:
         raise HTTPException(
             status_code=403,
@@ -312,15 +332,16 @@ def file_detail(
 
     chunks = session.scalars(
         select(DocumentChunk)
+        .join(File, File.id == DocumentChunk.file_id)
         .where(
             DocumentChunk.file_id == file.id,
-            DocumentChunk.content_version == file.version,
-            file.indexing_status == "indexed",
+            DocumentChunk.content_version == File.version,
+            File.user_id == user_id,
+            File.indexing_status == "indexed",
         )
         .order_by(DocumentChunk.chunk_index)
         .limit(30)
     ).all()
-    root = getattr(file, "root", None)
     return FileDetailResponse(
         file=_file_response(file, root),
         snippets=[

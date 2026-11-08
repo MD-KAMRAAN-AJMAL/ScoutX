@@ -15,7 +15,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.database.models import DocumentChunk, File
+from app.database.models import DocumentChunk, File, IndexRoot
 from app.security.permissions import require_readable_file
 
 
@@ -271,10 +271,15 @@ def point_candidates(
     rows = session.execute(
         select(DocumentChunk, File)
         .join(File, File.id == DocumentChunk.file_id)
+        .join(IndexRoot, (IndexRoot.id == File.root_id) & (IndexRoot.user_id == File.user_id))
         # The Qdrant result is already restricted to active points. Resolve its
         # relational owner without requiring File.version: during a failed
         # replacement that pointer intentionally still names an older version.
-        .where(DocumentChunk.qdrant_point_id.in_(point_ids), File.user_id == user_id)
+        .where(
+            DocumentChunk.qdrant_point_id.in_(point_ids),
+            File.user_id == user_id,
+            IndexRoot.is_enabled.is_(True),
+        )
     ).all()
     by_point = {chunk.qdrant_point_id: (chunk, file) for chunk, file in rows}
     candidates = []
@@ -354,7 +359,8 @@ def canonical_filter(
     statement = (
         select(DocumentChunk, File)
         .join(File, File.id == DocumentChunk.file_id)
-        .where(File.user_id == user_id, active_chunk_condition())
+        .join(IndexRoot, (IndexRoot.id == File.root_id) & (IndexRoot.user_id == File.user_id))
+        .where(File.user_id == user_id, IndexRoot.is_enabled.is_(True), active_chunk_condition())
     )
     if extensions:
         statement = statement.where(File.extension.in_([e.lower() for e in extensions]))
@@ -373,10 +379,15 @@ def active_chunk_condition():
     """Match the active generation while retaining the previous generation on failure."""
     active_version = File.extra_metadata["active_content_version"].as_integer()
     return or_(
-        DocumentChunk.content_version == active_version,
         and_(
-            active_version.is_(None),
-            File.indexing_status == "indexed",
-            DocumentChunk.content_version == File.version,
+            File.root.has(and_(IndexRoot.is_enabled.is_(True), IndexRoot.user_id == File.user_id)),
+            or_(
+                DocumentChunk.content_version == active_version,
+                and_(
+                    active_version.is_(None),
+                    File.indexing_status == "indexed",
+                    DocumentChunk.content_version == File.version,
+                ),
+            ),
         ),
     )
