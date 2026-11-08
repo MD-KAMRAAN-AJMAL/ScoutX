@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "file_content_chunks"
     redis_url: RedisDsn = Field(default="redis://localhost:6379/0")
+    ollama_base_url: AnyHttpUrl = Field(
+        default="http://localhost:11434", validation_alias="SCOUTX_OLLAMA_BASE_URL"
+    )
+    ollama_model: str = Field(default="qwen3:8b", validation_alias="SCOUTX_OLLAMA_MODEL")
+    ollama_timeout_seconds: float = Field(
+        default=20.0, gt=0, le=300, validation_alias="SCOUTX_OLLAMA_TIMEOUT_SECONDS"
+    )
     embedding_device: str = Field(
         default="auto", pattern="^(auto|cpu|cuda|mps)$", validation_alias="SCOUTX_EMBEDDING_DEVICE"
     )
