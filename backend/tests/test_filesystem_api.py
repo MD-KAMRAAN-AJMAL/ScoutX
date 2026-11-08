@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -57,8 +57,8 @@ class FakeSession:
 
 
 class FakeRootRepository:
-    roots: list[Any] = []
-    requested: list[Any] = []
+    roots: ClassVar[list[Any]] = []
+    requested: ClassVar[list[Any]] = []
 
     def __init__(self, _: FakeSession) -> None:
         pass
@@ -108,11 +108,10 @@ def api_dependencies(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 async def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.request(method, path, **kwargs)
 
 
 def call(method: str, path: str, **kwargs: Any) -> httpx.Response:
@@ -212,7 +211,7 @@ def test_file_listing_includes_mime_size_modified_status_and_extraction_error(
             canonical_path="/authorized/notes.pdf",
             mime_type="application/pdf",
             size_bytes=4096,
-            modified_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            modified_at=datetime(2026, 1, 2, tzinfo=UTC),
             indexing_status="indexed",
             extra_metadata={
                 "parser_status": "partial",
