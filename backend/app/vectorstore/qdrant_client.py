@@ -268,6 +268,73 @@ class QdrantStore:
             for point in response.points
         ]
 
+    def related_point_search(
+        self,
+        positive_point_ids: list[UUID],
+        *,
+        user_id: UUID,
+        limit: int = 20,
+        extensions: list[str] | None = None,
+        negative_point_ids: list[UUID] | None = None,
+    ) -> list[VectorSearchHit]:
+        """Find active points near existing user-owned points without new embeddings."""
+        from qdrant_client import models
+
+        if not positive_point_ids:
+            return []
+        _validate_search_scope(user_id, limit, None, None)
+        self.ensure_ready()
+        source_ids = [str(item) for item in positive_point_ids + (negative_point_ids or [])]
+        source_points = self.client.retrieve(
+            collection_name=self.collection_name,
+            ids=source_ids,
+            with_payload=True,
+            with_vectors=False,
+        )
+        allowed_positive = {
+            str(point.id)
+            for point in source_points
+            if (point.payload or {}).get("user_id") == str(user_id)
+            and (point.payload or {}).get("is_active") is True
+            and str(point.id) in {str(value) for value in positive_point_ids}
+        }
+        if not allowed_positive:
+            return []
+        allowed_negative = {
+            str(point.id)
+            for point in source_points
+            if (point.payload or {}).get("user_id") == str(user_id)
+            and (point.payload or {}).get("is_active") is True
+            and str(point.id) in {str(value) for value in (negative_point_ids or [])}
+        }
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            query=models.RecommendQuery(
+                recommend=models.RecommendInput(
+                    positive=sorted(allowed_positive),
+                    negative=sorted(allowed_negative),
+                )
+            ),
+            using=DENSE_VECTOR_NAME,
+            query_filter=models.Filter(
+                must=_search_conditions(
+                    models,
+                    user_id=user_id,
+                    project_id=None,
+                    authorized_file_ids=None,
+                    extensions=extensions,
+                    mime_types=None,
+                )
+            ),
+            limit=limit,
+            with_payload=False,
+            with_vectors=False,
+        )
+        return [
+            VectorSearchHit(point_id=UUID(str(point.id)), score=float(point.score))
+            for point in response.points
+        ]
+
     def activate_version(
         self,
         user_id: UUID,

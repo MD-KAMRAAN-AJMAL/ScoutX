@@ -17,7 +17,7 @@ from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import feedback, files, indexing, roots, search
+from app.api import feedback, files, indexing, personalization, recommendations, roots, search
 from app.config import get_settings
 from app.database.engine import engine
 from app.vectorstore.qdrant_client import QdrantStore
@@ -198,3 +198,5 @@ app.add_api_route(
     tags=["indexing"],
 )
 app.include_router(feedback.router, prefix=API_PREFIX)
+app.include_router(personalization.router, prefix=API_PREFIX)
+app.include_router(recommendations.router, prefix=API_PREFIX)

@@ -24,6 +24,8 @@ class AgentState(TypedDict, total=False):
     reranking_status: str
     generation_status: str
     generate_answer: bool
+    personalization_status: str
+    personalization_reasons: list[str]
     latency_ms: dict[str, float]
     answer: str | None
     errors: list[str]
