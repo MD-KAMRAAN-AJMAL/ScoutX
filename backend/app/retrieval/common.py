@@ -230,6 +230,7 @@ def qdrant_filter(
     """Build mandatory user/active-version filters plus optional validated facets."""
     from qdrant_client import models
 
+    user_id = authenticated_user_id(user_id)
     must = [
         models.FieldCondition(key="user_id", match=models.MatchValue(value=str(user_id))),
         models.FieldCondition(key="is_active", match=models.MatchValue(value=True)),
@@ -240,10 +241,11 @@ def qdrant_filter(
         must.append(models.FieldCondition(key="language", match=models.MatchAny(any=languages)))
     if extensions:
         must.append(models.FieldCondition(key="extension", match=models.MatchAny(any=extensions)))
-    if file_ids:
+    if file_ids is not None:
         must.append(
             models.FieldCondition(
-                key="file_id", match=models.MatchAny(any=[str(i) for i in file_ids])
+                key="file_id",
+                match=models.MatchAny(any=[str(i) for i in file_ids] or [str(UUID(int=0))]),
             )
         )
     return models.Filter(must=must)
