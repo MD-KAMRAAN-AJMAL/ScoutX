@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -18,7 +19,7 @@ from langgraph.prebuilt import ToolNode
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agents.evaluator import evaluate_candidates, rerank_results
+from app.agents.evaluator import evaluate_candidates
 from app.agents.planner import expand_query, plan_retrieval, understand_query
 from app.agents.schemas import QueryUnderstanding, RetrievalPlan, ToolInvocation
 from app.agents.state import AgentState
@@ -26,6 +27,10 @@ from app.agents.tools import make_retrieval_tools
 from app.database.engine import SessionLocal
 from app.database.models import AgentRun, File, FileActivity
 from app.database.repositories import PreferenceRepository
+from app.reranking.context import aggregate_files, build_context
+from app.reranking.generation import generate_grounded_answer
+from app.reranking.schemas import GroundedContext, RerankedCandidate
+from app.reranking.service import rerank_candidates
 from app.retrieval.common import SearchCandidate, deduplicate, reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
@@ -84,12 +89,17 @@ def build_agent_graph(
     retrieval_tools: list[BaseTool] | None = None,
     context_loader: Callable[[Session, UUID], dict[str, Any]] | None = None,
     run_recorder: Callable[[AgentState], None] | None = None,
+    reranker: Callable[..., Any] | None = None,
+    answer_generator: Callable[..., Any] | None = None,
+    generate_answer: bool = True,
 ):
     """Build a graph with a fixed user identity and a closed retrieval-tool allowlist."""
     tools = retrieval_tools or make_retrieval_tools(user_id, session_factory)
     tool_node = ToolNode(tools, handle_tool_errors=True)
     allowlist = {tool.name for tool in tools}
     context_loader = context_loader or load_user_context
+    reranker = reranker or rerank_candidates
+    answer_generator = answer_generator or generate_grounded_answer
 
     async def understand_node(state: AgentState):
         parsed = await understand_query(state["original_query"], llm)
@@ -127,6 +137,11 @@ def build_agent_graph(
         }
 
     async def execute_node(state: AgentState):
+        started = time.perf_counter()
+        logger.info(
+            "Retrieval started",
+            extra={"run_id": str(run_id), "query_length": len(state.get("query", ""))},
+        )
         plan = RetrievalPlan.model_validate(state["plan"])
         calls = plan.tools
         tool_calls = []
@@ -166,18 +181,41 @@ def build_agent_graph(
             if len(nonempty) > 1
             else deduplicate(nonempty[0] if nonempty else [])
         )
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.info(
+            "Retrieval completed",
+            extra={
+                "run_id": str(run_id),
+                "candidate_count": len(merged),
+                "duration_ms": duration_ms,
+            },
+        )
         return {
             "results": [x.model_dump(mode="json") for x in merged],
             "tools_invoked": [*state.get("tools_invoked", []), *(x.tool for x in calls)],
             "candidate_counts": {**state.get("candidate_counts", {}), **counts},
             "errors": [*state.get("errors", []), *errors],
             "execution_result": "candidates" if merged else "empty",
+            "latency_ms": {**state.get("latency_ms", {}), "retrieval": duration_ms},
             "execution_trace": _trace(state, "execute_retrieval"),
         }
 
     def rerank_node(state: AgentState):
+        started = time.perf_counter()
+        ranked, status = reranker(
+            state.get("query", state["original_query"]), state.get("results", [])
+        )
+        ranked = [RerankedCandidate.model_validate(item) for item in ranked]
+        results = []
+        for item in ranked:
+            candidate = item.candidate.model_copy(update={"relevance_score": item.final_score})
+            results.append(candidate.model_dump(mode="json"))
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
         return {
-            "results": rerank_results(state.get("results", [])),
+            "results": results,
+            "reranked_candidates": [item.model_dump(mode="json") for item in ranked],
+            "reranking_status": status,
+            "latency_ms": {**state.get("latency_ms", {}), "reranking": duration_ms},
             "execution_trace": _trace(state, "rerank_results"),
         }
 
@@ -207,28 +245,53 @@ def build_agent_graph(
         }
 
     def context_build_node(state: AgentState):
-        fields = (
-            "file_id",
-            "chunk_id",
-            "file_name",
-            "file_path",
-            "content",
-            "page_number",
-            "line_start",
-            "line_end",
-            "start_time_ms",
-            "end_time_ms",
-            "retrieval_method",
-        )
-        context = [
-            {key: candidate.get(key) for key in fields}
-            for candidate in state.get("results", [])[:10]
+        started = time.perf_counter()
+        ranked = [
+            RerankedCandidate.model_validate(item) for item in state.get("reranked_candidates", [])
         ]
-        return {"context": context, "execution_trace": _trace(state, "build_context")}
+        files = aggregate_files(ranked)
+        context = build_context(ranked)
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        return {
+            "files": [item.model_dump(mode="json") for item in files],
+            "context": context.model_dump(mode="json"),
+            "latency_ms": {**state.get("latency_ms", {}), "context": duration_ms},
+            "execution_trace": _trace(state, "build_context"),
+        }
 
-    def answer_node(state: AgentState):
-        # Phase 7 owns grounded answer generation; do not synthesize one here.
-        return {"answer": None, "execution_trace": _trace(state, "generate_answer")}
+    async def answer_node(state: AgentState):
+        if not state.get("generate_answer", generate_answer):
+            return {
+                "answer": None,
+                "citations": [],
+                "generation_status": "retrieval_only",
+                "execution_trace": _trace(state, "generate_answer"),
+            }
+        context = GroundedContext.model_validate(state.get("context", {}))
+        started = time.perf_counter()
+        try:
+            answer, citations, status = await answer_generator(
+                state.get("original_query", state.get("query", "")), context, llm
+            )
+        except Exception as exc:
+            logger.exception("Grounded answer generator raised")
+            answer = "I found relevant files, but couldn't generate a grounded summary. Please review the source material."
+            citations = []
+            status = "llm_error"
+            errors = [*state.get("errors", []), f"answer generation failed ({type(exc).__name__})"]
+        else:
+            errors = state.get("errors", [])
+        return {
+            "answer": answer,
+            "citations": citations,
+            "generation_status": status,
+            "latency_ms": {
+                **state.get("latency_ms", {}),
+                "generation": round((time.perf_counter() - started) * 1000, 2),
+            },
+            "errors": errors,
+            "execution_trace": _trace(state, "generate_answer"),
+        }
 
     async def record_node(state: AgentState):
         final_state = {**state, "execution_trace": _trace(state, "record_run")}
@@ -291,6 +354,10 @@ def _persist_run(
                 "retry_count",
                 "execution_result",
                 "evaluation",
+                "reranking_status",
+                "generation_status",
+                "latency_ms",
+                "answer",
                 "execution_trace",
                 "errors",
             )

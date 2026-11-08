@@ -54,8 +54,3 @@ def evaluate_candidates(
         lexical_coverage=round(coverage, 4),
         reason=f"{count} candidates; best lexical coverage {coverage:.2f}.",
     )
-
-
-def rerank_results(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """No-op seam until Phase 7 cross-encoder reranking."""
-    return list(candidates)
