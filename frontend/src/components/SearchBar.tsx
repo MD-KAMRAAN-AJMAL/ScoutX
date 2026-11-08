@@ -3,10 +3,11 @@ import { useState, type FormEvent } from 'react'
 interface SearchBarProps {
   onSearch: (query: string) => void
   busy?: boolean
+  onCancel?: () => void
   placeholder?: string
 }
 
-export function SearchBar({ onSearch, busy = false, placeholder = 'Search files, ideas, or a phrase…' }: SearchBarProps) {
+export function SearchBar({ onSearch, busy = false, onCancel, placeholder = 'Search files, ideas, or a phrase…' }: SearchBarProps) {
   const [query, setQuery] = useState('')
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -26,9 +27,9 @@ export function SearchBar({ onSearch, busy = false, placeholder = 'Search files,
         onChange={(event) => setQuery(event.target.value)}
       />
       <kbd className="hidden rounded-md border border-[#e7ebe8] px-2 py-1 text-xs text-[#8a958e] sm:inline">↵</kbd>
-      <button disabled={!query.trim() || busy} className="rounded-xl bg-[#1c5b45] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#164b38] disabled:cursor-not-allowed disabled:opacity-45">
-        {busy ? 'Searching…' : 'Search'}
-      </button>
+      {busy && onCancel
+        ? <button type="button" onClick={onCancel} className="rounded-xl border border-[#e3e8e4] px-4 py-3 text-sm font-medium text-[#59675f] hover:bg-[#f5f8f5]">Cancel</button>
+        : <button disabled={!query.trim() || busy} className="rounded-xl bg-[#1c5b45] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#164b38] disabled:cursor-not-allowed disabled:opacity-45">{busy ? 'Searching…' : 'Search'}</button>}
     </form>
   )
 }

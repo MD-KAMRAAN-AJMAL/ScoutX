@@ -1,27 +1,30 @@
 import { useEffect, useState } from 'react'
 import { IndexingStatusCard } from './components/IndexingStatus'
 import { FilesPage } from './pages/FilesPage'
+import { IndexingPage } from './pages/IndexingPage'
 import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { api, type IndexStatus } from './services/api'
 
-type Page = 'search' | 'files' | 'settings'
+type Page = 'search' | 'files' | 'indexing' | 'settings'
 
 const navigation: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'search', label: 'Search', icon: '⌕' },
   { id: 'files', label: 'Files', icon: '▤' },
+  { id: 'indexing', label: 'Indexing', icon: '◷' },
   { id: 'settings', label: 'Settings', icon: '⚙' },
 ]
 
 export default function App() {
   const [page, setPage] = useState<Page>('search')
   const [apiOnline, setApiOnline] = useState(false)
+  const [dependenciesDegraded, setDependenciesDegraded] = useState(false)
   const [indexStatus, setIndexStatus] = useState<IndexStatus>()
   const [indexStatusUnavailable, setIndexStatusUnavailable] = useState(false)
 
   useEffect(() => {
     let active = true
-    api.health().then(() => { if (active) setApiOnline(true) }).catch(() => { if (active) setApiOnline(false) })
+    api.health().then((health) => { if (active) { setApiOnline(true); setDependenciesDegraded(health.status === 'degraded') } }).catch(() => { if (active) setApiOnline(false) })
     api.indexStatus().then((status) => {
       if (active) setIndexStatus(status)
     }).catch(() => {
@@ -40,16 +43,16 @@ export default function App() {
         <nav className="space-y-1" aria-label="Main navigation">
           {navigation.map((item) => <button key={item.id} onClick={() => setPage(item.id)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${page === item.id ? 'bg-[#eaf2ed] font-medium text-[#246246]' : 'text-[#77827b] hover:bg-[#f1f4f1] hover:text-[#3d4c43]'}`}><span className="w-5 text-center text-base">{item.icon}</span>{item.label}</button>)}
         </nav>
-        <div className="mt-auto"><IndexingStatusCard status={indexStatus} unavailable={!apiOnline || indexStatusUnavailable} /><div className="mt-4 flex items-center gap-2 px-2 text-[11px] text-[#9aa39d]"><span className={`h-1.5 w-1.5 rounded-full ${apiOnline ? 'bg-[#59a27b]' : 'bg-[#d2a259]'}`} />{apiOnline ? 'API connected' : 'Connecting to local API'}</div></div>
+        <div className="mt-auto"><IndexingStatusCard status={indexStatus} unavailable={!apiOnline || indexStatusUnavailable} /><div className="mt-4 flex items-center gap-2 px-2 text-[11px] text-[#9aa39d]"><span className={`h-1.5 w-1.5 rounded-full ${apiOnline && !dependenciesDegraded ? 'bg-[#59a27b]' : 'bg-[#d2a259]'}`} />{!apiOnline ? 'Connecting to local API' : dependenciesDegraded ? 'API connected · services need attention' : 'API connected'}</div></div>
       </aside>
       <div className="lg:pl-[248px]">
         <header className="sticky top-0 z-[5] flex h-[66px] items-center justify-between border-b border-[#e9ede9] bg-[#f9faf8]/90 px-5 backdrop-blur sm:px-8">
           <div className="flex items-center gap-2 lg:hidden"><span className="grid h-8 w-8 place-items-center rounded-lg bg-[#1f5e47] font-semibold text-white">s</span><span className="font-semibold">scout<span className="text-[#4b906d]">x</span></span></div>
-          <div className="hidden text-sm text-[#9aa39d] lg:block">{page === 'search' ? 'Search your workspace' : page === 'files' ? 'Your file library' : 'Workspace settings'}</div>
+          <div className="hidden text-sm text-[#9aa39d] lg:block">{page === 'search' ? 'Search your workspace' : page === 'files' ? 'Your file library' : page === 'indexing' ? 'Indexing activity' : 'Workspace settings'}</div>
           <nav className="flex items-center gap-1 lg:hidden" aria-label="Mobile navigation">{navigation.map((item) => <button key={item.id} aria-label={item.label} onClick={() => setPage(item.id)} className={`rounded-lg px-3 py-2 text-sm ${page === item.id ? 'bg-[#eaf2ed] text-[#246246]' : 'text-[#77827b]'}`}>{item.icon}</button>)}</nav>
           <div className="flex items-center gap-2 text-xs text-[#7c8980]"><span className={`h-2 w-2 rounded-full ${apiOnline ? 'bg-[#55a77b]' : 'bg-[#d6a65b]'}`} />Local workspace</div>
         </header>
-        <main>{page === 'search' ? <SearchPage /> : page === 'files' ? <FilesPage /> : <SettingsPage />}</main>
+        <main>{page === 'search' ? <SearchPage /> : page === 'files' ? <FilesPage /> : page === 'indexing' ? <IndexingPage /> : <SettingsPage />}</main>
       </div>
     </div>
   )

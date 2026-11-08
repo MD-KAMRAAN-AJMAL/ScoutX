@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { FileList } from '../components/FileList'
+import { FileDetailPanel } from '../components/FileDetailPanel'
 import { IndexingStatusCard } from '../components/IndexingStatus'
-import { api, APIRequestError, type FileRecord, type IndexStatus, type RootRecord } from '../services/api'
+import { api, APIRequestError, type FileRecord, type FileStatus, type IndexStatus, type RootRecord } from '../services/api'
 
 const PAGE_SIZE = 50
 
@@ -17,9 +18,35 @@ export function FilesPage() {
   const [savingRoot, setSavingRoot] = useState(false)
   const [reconciling, setReconciling] = useState(false)
   const [notice, setNotice] = useState('')
+  const [filenameFilter, setFilenameFilter] = useState('')
+  const [appliedFilename, setAppliedFilename] = useState('')
+  const [extensionFilter, setExtensionFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState<FileStatus | ''>('')
+  const [sortBy, setSortBy] = useState<'name' | 'modified_at' | 'size_bytes' | 'last_indexed_at'>('name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const [appliedExtension, setAppliedExtension] = useState('')
+  const [appliedStatus, setAppliedStatus] = useState<FileStatus | ''>('')
+  const [appliedSortBy, setAppliedSortBy] = useState<typeof sortBy>('name')
+  const [appliedSortOrder, setAppliedSortOrder] = useState<typeof sortOrder>('asc')
+  const [modifiedAfter, setModifiedAfter] = useState('')
+  const [modifiedBefore, setModifiedBefore] = useState('')
+  const [appliedModifiedAfter, setAppliedModifiedAfter] = useState('')
+  const [appliedModifiedBefore, setAppliedModifiedBefore] = useState('')
+  const [selectedFileId, setSelectedFileId] = useState<string>()
 
   const loadFiles = useCallback(async (rootId: string, pageOffset: number) => {
-    const result = await api.files(PAGE_SIZE, pageOffset, rootId === 'all' ? undefined : rootId)
+    const result = await api.files({
+      limit: PAGE_SIZE,
+      offset: pageOffset,
+      rootId: rootId === 'all' ? undefined : rootId,
+      filenameContains: appliedFilename || undefined,
+      extension: appliedExtension || undefined,
+      indexingStatus: appliedStatus || undefined,
+      sortBy: appliedSortBy,
+      sortOrder: appliedSortOrder,
+      modifiedAfter: appliedModifiedAfter ? `${appliedModifiedAfter}T00:00:00Z` : undefined,
+      modifiedBefore: appliedModifiedBefore ? `${appliedModifiedBefore}T23:59:59Z` : undefined,
+    })
     setFiles(result.items)
     setTotal(result.total)
   }, [])
@@ -28,7 +55,18 @@ export function FilesPage() {
     setLoading(true)
     const [rootResult, fileResult, statusResult] = await Promise.allSettled([
       api.roots(),
-      api.files(PAGE_SIZE, offset, selectedRoot === 'all' ? undefined : selectedRoot),
+      api.files({
+        limit: PAGE_SIZE,
+        offset,
+        rootId: selectedRoot === 'all' ? undefined : selectedRoot,
+        filenameContains: appliedFilename || undefined,
+        extension: appliedExtension || undefined,
+        indexingStatus: appliedStatus || undefined,
+        sortBy: appliedSortBy,
+        sortOrder: appliedSortOrder,
+        modifiedAfter: appliedModifiedAfter ? `${appliedModifiedAfter}T00:00:00Z` : undefined,
+        modifiedBefore: appliedModifiedBefore ? `${appliedModifiedBefore}T23:59:59Z` : undefined,
+      }),
       api.indexStatus(),
     ])
     if (rootResult.status === 'fulfilled') setRoots(rootResult.value.items)
@@ -46,7 +84,7 @@ export function FilesPage() {
       setNotice('')
     }
     setLoading(false)
-  }, [offset, selectedRoot])
+  }, [appliedExtension, appliedFilename, appliedModifiedAfter, appliedModifiedBefore, appliedSortBy, appliedSortOrder, appliedStatus, offset, selectedRoot])
 
   useEffect(() => { void loadWorkspace() }, [loadWorkspace])
 
@@ -169,15 +207,22 @@ export function FilesPage() {
             <h2 className="text-lg font-semibold text-[#27352e]">Discovered files</h2>
             <p className="mt-1 text-xs text-[#929c95]">{total.toLocaleString()} file records</p>
           </div>
-          <label className="flex items-center gap-2 text-sm text-[#75827a]">
-            Folder
+          <label className="flex items-center gap-2 text-sm text-[#75827a]">Folder
             <select value={selectedRoot} onChange={(event) => changeRoot(event.target.value)} className="rounded-lg border border-[#e2e8e3] bg-white px-3 py-2 text-sm text-[#334139]">
-              <option value="all">All folders</option>
-              {roots.map((root) => <option key={root.id} value={root.id}>{root.display_name ?? root.path}</option>)}
+              <option value="all">All folders</option>{roots.map((root) => <option key={root.id} value={root.id}>{root.display_name ?? root.path}</option>)}
             </select>
           </label>
         </div>
-        {loading ? <div className="rounded-2xl border border-[#e3e8e4] bg-white px-6 py-12 text-center text-sm text-[#89948d]">Loading files…</div> : <FileList files={files} message={notice ? 'File records are unavailable' : 'No files have been discovered in this folder yet'} />}
+        <form onSubmit={(event) => { event.preventDefault(); setOffset(0); setAppliedFilename(filenameFilter.trim()); setAppliedExtension(extensionFilter.trim()); setAppliedStatus(statusFilter); setAppliedSortBy(sortBy); setAppliedSortOrder(sortOrder); setAppliedModifiedAfter(modifiedAfter); setAppliedModifiedBefore(modifiedBefore) }} className="mb-4 grid gap-2 rounded-2xl border border-[#e3e8e4] bg-white p-4 sm:grid-cols-2 xl:grid-cols-5">
+          <label className="text-xs text-[#75827a]">Filename<input value={filenameFilter} onChange={(event) => setFilenameFilter(event.target.value)} placeholder="Filter by name" className="mt-1 block w-full rounded-lg border border-[#e2e8e3] px-3 py-2 text-sm text-[#334139]" /></label>
+          <label className="text-xs text-[#75827a]">Extension<input value={extensionFilter} onChange={(event) => setExtensionFilter(event.target.value)} placeholder=".pdf, .py" className="mt-1 block w-full rounded-lg border border-[#e2e8e3] px-3 py-2 text-sm text-[#334139]" /></label>
+          <label className="text-xs text-[#75827a]">Indexing status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as FileStatus | '')} className="mt-1 block w-full rounded-lg border border-[#e2e8e3] bg-white px-3 py-2 text-sm text-[#334139]"><option value="">All statuses</option>{['pending', 'processing', 'indexed', 'partial', 'failed', 'unsupported', 'deleted'].map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
+          <label className="text-xs text-[#75827a]">Modified after<input type="date" value={modifiedAfter} onChange={(event) => setModifiedAfter(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#e2e8e3] px-3 py-2 text-sm text-[#334139]" /></label>
+          <label className="text-xs text-[#75827a]">Modified before<input type="date" value={modifiedBefore} onChange={(event) => setModifiedBefore(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#e2e8e3] px-3 py-2 text-sm text-[#334139]" /></label>
+          <label className="text-xs text-[#75827a]">Sort by<select value={sortBy} onChange={(event) => setSortBy(event.target.value as typeof sortBy)} className="mt-1 block w-full rounded-lg border border-[#e2e8e3] bg-white px-3 py-2 text-sm text-[#334139]"><option value="name">Name</option><option value="modified_at">Modified</option><option value="size_bytes">Size</option><option value="last_indexed_at">Last indexed</option></select></label>
+          <div className="flex items-end gap-2"><label className="flex-1 text-xs text-[#75827a]">Order<select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as typeof sortOrder)} className="mt-1 block w-full rounded-lg border border-[#e2e8e3] bg-white px-3 py-2 text-sm text-[#334139]"><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><button className="rounded-lg bg-[#1c5b45] px-4 py-2 text-sm font-semibold text-white">Filter</button></div>
+        </form>
+        {loading ? <div className="rounded-2xl border border-[#e3e8e4] bg-white px-6 py-12 text-center text-sm text-[#89948d]">Loading files…</div> : <FileList files={files} onSelect={(file) => setSelectedFileId(file.id)} message={notice ? 'File records are unavailable' : 'No files match these filters'} />}
         <div className="mt-4 flex items-center justify-between text-xs text-[#839087]">
           <span>{total ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, total)} of ${total}` : 'No records'}</span>
           <div className="flex gap-2">
@@ -186,6 +231,7 @@ export function FilesPage() {
           </div>
         </div>
       </section>
+      {selectedFileId && <div className="mt-6 max-w-3xl"><FileDetailPanel fileId={selectedFileId} onClose={() => setSelectedFileId(undefined)} /></div>}
     </div>
   )
 }
