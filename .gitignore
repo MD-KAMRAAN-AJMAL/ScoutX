@@ -12,6 +12,31 @@ venv/
 .env.*
 !.env.example
 
+# Local data, backups, and generated artifacts
+backups/
+tmp/
+temp/
+volumes/
+local-files/
+user-files/
+model-cache/
+hf_cache/
+postgres-data/
+qdrant-data/
+redis-data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.bin
+*.aiff
+
 # Models and generated data
 models/
 data/
